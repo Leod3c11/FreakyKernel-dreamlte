@@ -1,99 +1,60 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Shark custom DVFS authority for Exynos8895. */
+/*
+ * Shark custom DVFS interface for Samsung Exynos SoC domains.
+ *
+ * Exynos 8895 / Galaxy S8 adaptation based on the original Shark interface.
+ * Keep this header synchronized with drivers/soc/samsung/exynos-soc_interface.c.
+ */
 #ifndef __SOC_SAMSUNG_EXYNOS_SOC_INTERFACE_H__
 #define __SOC_SAMSUNG_EXYNOS_SOC_INTERFACE_H__
 
 #include <linux/types.h>
 
-#define SHARK_SOC_DOMAIN_ID_ANY		(~0U)
-#define SHARK_SOC_MAX_DOMAIN_OPPS	24U
-
-enum shark_soc_catalog_kind {
-	SHARK_SOC_CATALOG_ANY = 0,
-	SHARK_SOC_CATALOG_PLL_RATES,
-	SHARK_SOC_CATALOG_DVFS_LEVELS,
-	SHARK_SOC_CATALOG_DVFS_ENABLED,
-	SHARK_SOC_CATALOG_DVFS_SFR,
-	SHARK_SOC_CATALOG_DVFS_PARAMS,
-	SHARK_SOC_CATALOG_ASV_FREQS,
-	SHARK_SOC_CATALOG_ASV_TABLE,
-	SHARK_SOC_CATALOG_GEN_TABLE,
-	SHARK_SOC_CATALOG_NEWTIME_TABLE,
-	SHARK_SOC_CATALOG_MINLOCK_TABLE,
-	SHARK_SOC_CATALOG_THERMAL_RANGES,
-};
-
-struct shark_soc_catalog_table {
-	const char *block;
-	const char *name;
-	const char *subname;
-	unsigned int kind;
-	unsigned int rows;
-	unsigned int cols;
-	unsigned int aux0;
-	unsigned int aux1;
-	const u64 *data;
-};
-
-unsigned int shark_soc_catalog_get_count(void);
-const struct shark_soc_catalog_table *
-shark_soc_catalog_get_table(unsigned int index);
-const struct shark_soc_catalog_table *
-shark_soc_catalog_find(const char *block, const char *name,
-		       const char *subname, unsigned int kind);
-bool shark_soc_is_enabled(void);
-
-/* Called synchronously after an ECT block has been parsed. */
-void shark_soc_ect_block_post_parse(const char *block_name, void *handle);
-
-/* Runtime access to the authoritative per-domain table. */
-int shark_soc_get_domain_table(const char *name, unsigned int domain_id,
-			       unsigned int *rates_khz,
-			       unsigned int *volts_uv,
-			       unsigned int capacity,
-			       unsigned int *count);
-
-int shark_soc_get_domain_rate_table(const char *name, unsigned int domain_id,
-				    unsigned int *rates_khz,
-				    unsigned int capacity,
-				    unsigned int *count);
-int shark_soc_get_domain_max_freq(const char *name, unsigned int domain_id,
-				  unsigned int *rate_khz);
-int shark_soc_get_domain_min_freq(const char *name, unsigned int domain_id,
-				  unsigned int *rate_khz);
-int shark_soc_get_domain_boot_freq(const char *name, unsigned int domain_id,
-				   unsigned int *rate_khz);
-int shark_soc_get_domain_resume_freq(const char *name,
-				     unsigned int domain_id,
-				     unsigned int *rate_khz);
+/*
+ * Exynos 8895 G3D DVFS domain.
+ * Frequencies: 839, 764, 683, 572, 546, 455, 385, 338 and 260 MHz.
+ * The current .c implementation carries one static fallback ASV profile.
+ */
+#define SHARK_G3D_DVFS_LEVEL_COUNT	9
+#define SHARK_G3D_ASV_GROUP_COUNT	1
+#define SHARK_G3D_DEFAULT_ASV_GROUP	0
+#define SHARK_G3D_VOLT_STEP_UV		6250U
+#define SHARK_G3D_MIN_VOLT_UV		718750U
+#define SHARK_G3D_MAX_VOLT_UV		793750U
 
 /*
- * Bind the effective VCLK policy after ECT/ASV selection.  The rate labels
- * must exactly match the static Shark domain; otherwise the binding is
- * rejected and callers keep using the Samsung VCLK metadata.
+ * Exynos 8895 MIF DVFS domain.
+ * Frequencies: 2093, 2002, 1794, 1540, 1352, 1014, 845, 676,
+ *              546, 421, 286 and 208 MHz.
+ * The current .c implementation carries one static fallback ASV profile.
  */
-int shark_soc_bind_clock_domain(const char *name, unsigned int domain_id,
-				unsigned int count,
-				const unsigned int *rates_khz,
-				unsigned int max_freq_khz,
-				unsigned int min_freq_khz,
-				unsigned int boot_freq_khz,
-				unsigned int resume_freq_khz);
+#define SHARK_MIF_DVFS_LEVEL_COUNT	12
+#define SHARK_MIF_ASV_GROUP_COUNT	1
+#define SHARK_MIF_DEFAULT_ASV_GROUP	0
+#define SHARK_MIF_VOLT_STEP_UV		6250U
 
-/* Round and clamp a request to a published Shark domain rate. */
-int shark_soc_resolve_rate(const char *name, unsigned int domain_id,
-			   unsigned int requested_khz,
-			   unsigned int *resolved_khz);
+/* ECT dvfs_mif boot/resume level indices for Exynos 8895. */
+#define SHARK_MIF_DEFAULT_BOOT_LEVEL	0
+#define SHARK_MIF_DEFAULT_RESUME_LEVEL	5
 
-/*
- * Merge the static Shark rate authority with the live, chip-binned FVMap
- * voltages. Returns > 0 when output should replace the FVMap table.
- */
-int shark_soc_fvmap_prepare(const char *name, unsigned int domain_id,
-			    unsigned int count,
-			    const unsigned int *live_rates_khz,
-			    const unsigned int *live_volts_uv,
-			    unsigned int *rates_khz,
-			    unsigned int *volts_uv);
+unsigned int shark_g3d_get_clamped_asv_group(unsigned int asv_group);
+unsigned long shark_g3d_get_max_freq(void);
+unsigned long shark_g3d_get_min_freq(void);
+unsigned long shark_g3d_get_freq(unsigned int level);
+unsigned int shark_g3d_get_default_volt(unsigned int asv_group,
+					unsigned int level);
+int shark_g3d_get_level_from_freq(unsigned long freq);
+unsigned long shark_g3d_snap_freq(unsigned long freq);
+
+unsigned long shark_mif_get_max_freq(void);
+unsigned long shark_mif_get_min_freq(void);
+unsigned long shark_mif_get_freq(unsigned int level);
+unsigned long shark_mif_get_boot_freq(void);
+unsigned long shark_mif_get_resume_freq(void);
+unsigned int shark_mif_get_clamped_asv_group(unsigned int asv_group);
+unsigned int shark_mif_get_default_volt(unsigned int asv_group,
+					unsigned int level);
+unsigned int shark_mif_get_interpolated_volt(unsigned long freq);
+unsigned long shark_mif_snap_freq(unsigned long freq);
 
 #endif /* __SOC_SAMSUNG_EXYNOS_SOC_INTERFACE_H__ */
