@@ -26,7 +26,6 @@
 #include <linux/exynos-ss.h>
 #include <linux/io.h>
 #include <linux/sched.h>
-#include <linux/string.h>
 #include <linux/exynos-wd.h>
 
 #include <soc/samsung/exynos-devfreq.h>
@@ -34,7 +33,7 @@
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-dm.h>
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-#include <soc/samsung/exynos-soc-interface.h>
+#include <soc/samsung/exynos-soc_interface.h>
 #endif
 #include "../../soc/samsung/acpm/acpm.h"
 #include "../../soc/samsung/acpm/acpm_ipc.h"
@@ -54,9 +53,11 @@ struct exynos_devfreq_init_func {
 static struct exynos_devfreq_init_func exynos_devfreq_init[DEVFREQ_TYPE_END];
 static struct exynos_devfreq_data *devfreq_data[DEVFREQ_TYPE_END];
 
-static u32 freq_array[6];
 static u32 volt_array[4];
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
+static u32 freq_array[6];
 static u32 boot_array[2];
+#endif
 
 #ifdef CONFIG_EXYNOS_WD_DVFS
 void exynos_wd_call_chain(void)
@@ -794,50 +795,40 @@ struct device *find_exynos_devfreq_device(enum exynos_dm_type dm_type)
 #endif
 
 #ifdef CONFIG_OF
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-static bool exynos_devfreq_is_shark_mif(const char *name)
-{
-	return name && !strcmp(name, "dvfs_mif");
-}
-
-static unsigned int exynos_devfreq_shark_rate(const char *name,
-					      unsigned int rate)
-{
-	if (!exynos_devfreq_is_shark_mif(name))
-		return rate;
-
-	return (unsigned int)shark_mif_snap_freq(rate);
-}
-#endif
-
 #if defined(CONFIG_ECT)
 static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char *dvfs_domain_name)
 {
 	int i;
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	void *dvfs_block;
 	struct ect_dvfs_domain *dvfs_domain;
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	if (exynos_devfreq_is_shark_mif(dvfs_domain_name)) {
-		unsigned int count = SHARK_MIF_DVFS_LEVEL_COUNT;
-
-		if (count > ARRAY_SIZE(data->opp_list))
-			return -EINVAL;
-
-		data->max_state = count;
-		for (i = 0; i < count; i++) {
-			data->opp_list[i].idx = i;
-			data->opp_list[i].freq =
-				(unsigned int)shark_mif_get_freq(i);
-			data->opp_list[i].volt = 0;
-		}
-
-		dev_info(data->dev,
-			 "Shark DVFS: %s using S8 MIF table (%u levels)\n",
-			 dvfs_domain_name, count);
-		return 0;
-	}
 #endif
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	int ret;
 
+	ret = shark_soc_get_domain_rate_table(dvfs_domain_name,
+					      SHARK_SOC_DOMAIN_ID_ANY, rates,
+					      ARRAY_SIZE(rates), &count);
+	if (ret)
+		return ret;
+	if (!count || count > ARRAY_SIZE(data->opp_list))
+		return -EINVAL;
+	for (i = 0; i < count; i++) {
+		if (!rates[i] || (i && rates[i] >= rates[i - 1]))
+			return -ERANGE;
+	}
+	data->max_state = count;
+	for (i = 0; i < count; i++) {
+		data->opp_list[i].idx = i;
+		data->opp_list[i].freq = rates[i];
+		data->opp_list[i].volt = 0;
+	}
+	dev_info(data->dev, "Shark DVFS: %s OPP authority (%u levels)\n",
+		 dvfs_domain_name, count);
+	return 0;
+#else
 	dvfs_block = ect_get_block(BLOCK_DVFS);
 	if (dvfs_block == NULL)
 		return -ENODEV;
@@ -854,6 +845,7 @@ static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char
 	}
 
 	return 0;
+#endif
 }
 #endif
 
@@ -874,6 +866,10 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	const char *use_delay_time;
 	int ntokens;
 	int not_using_ect = true;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_devfreq_policy shark_policy;
+	int ret;
+#endif
 
 	if (!np)
 		return -ENODEV;
@@ -933,35 +929,48 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	not_using_ect = exynos_devfreq_parse_ect(data, devfreq_domain_name);
 #endif
 	if (not_using_ect) {
-		dev_err(data->dev, "cannot parse the DVFS info in ECT");
-		return -ENODEV;
+		dev_err(data->dev, "cannot get authoritative DVFS info (%d)\n",
+			not_using_ect);
+		return not_using_ect < 0 ? not_using_ect : -ENODEV;
 	}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_devfreq_policy(devfreq_domain_name,
+		SHARK_SOC_DOMAIN_ID_ANY, &shark_policy);
+	if (ret) {
+		dev_err(data->dev,
+			"Shark DVFS: policy for %s is unavailable (%d)\n",
+			devfreq_domain_name, ret);
+		return ret;
+	}
+	data->devfreq_profile.initial_freq = shark_policy.initial_freq;
+	data->default_qos = shark_policy.default_qos;
+	data->devfreq_profile.suspend_freq = shark_policy.suspend_freq;
+	data->min_freq = shark_policy.min_freq;
+	data->max_freq = shark_policy.max_freq;
+	data->reboot_freq = shark_policy.reboot_freq;
+#else
 	if (of_property_read_u32_array(np, "freq_info", (u32 *)&freq_array,
 				       (size_t)(ARRAY_SIZE(freq_array))))
 		return -ENODEV;
-
 	data->devfreq_profile.initial_freq = freq_array[0];
 	data->default_qos = freq_array[1];
 	data->devfreq_profile.suspend_freq = freq_array[2];
 	data->min_freq = freq_array[3];
 	data->max_freq = freq_array[4];
 	data->reboot_freq = freq_array[5];
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	data->devfreq_profile.initial_freq = exynos_devfreq_shark_rate(
-		devfreq_domain_name, data->devfreq_profile.initial_freq);
-	data->default_qos = exynos_devfreq_shark_rate(devfreq_domain_name,
-		data->default_qos);
-	data->devfreq_profile.suspend_freq = exynos_devfreq_shark_rate(
-		devfreq_domain_name, data->devfreq_profile.suspend_freq);
-	data->min_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
-		data->min_freq);
-	data->max_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
-		data->max_freq);
-	data->reboot_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
-		data->reboot_freq);
 #endif
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	if (of_property_read_u32_index(np, "boot_info", 0,
+				       &data->boot_qos_timeout)) {
+		data->boot_qos_timeout = 0;
+		data->boot_freq = 0;
+		dev_info(data->dev, "This doesn't use boot value\n");
+	} else {
+		data->boot_freq = shark_policy.boot_freq;
+	}
+#else
 	if (of_property_read_u32_array(np, "boot_info", (u32 *)&boot_array,
 				       (size_t)(ARRAY_SIZE(boot_array)))) {
 		data->boot_qos_timeout = 0;
@@ -970,11 +979,8 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	} else {
 		data->boot_qos_timeout = boot_array[0];
 		data->boot_freq = boot_array[1];
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-		data->boot_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
-			data->boot_freq);
-#endif
 	}
+#endif
 	if (of_property_read_string(np, "use_get_dev", &use_get_dev))
 		return -ENODEV;
 
@@ -1072,10 +1078,15 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 				get_tokenized_data(buf, &ntokens);
 			data->simple_interactive_data.ntarget_load = ntokens;
 		}
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		data->simple_interactive_data.hispeed_freq =
+			shark_policy.max_freq;
+#else
 		if (of_property_read_u32(np, "hispeed_freq",
 					 &data->simple_interactive_data.hispeed_freq))
 			data->simple_interactive_data.hispeed_freq =
 				INTERACTIVE_HISPEED_FREQ;
+#endif
 		if (of_property_read_u32(np, "go_hispeed_load",
 					 &data->simple_interactive_data.go_hispeed_load))
 			data->simple_interactive_data.go_hispeed_load =

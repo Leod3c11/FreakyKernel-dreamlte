@@ -17,6 +17,9 @@
 #include <linux/of.h>
 #include <linux/smc.h>
 #include <linux/cpuidle.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "s5p_mfc_common.h"
 
@@ -878,10 +881,12 @@ static int mfc_parse_mfc_qos_platdata(struct device_node *np, char *node_name,
 	}
 
 	of_property_read_u32(np_qos, "thrd_mb", &qosdata->threshold_mb);
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	of_property_read_u32(np_qos, "freq_int", &qosdata->freq_int);
 	of_property_read_u32(np_qos, "freq_mif", &qosdata->freq_mif);
 	of_property_read_u32(np_qos, "freq_cpu", &qosdata->freq_cpu);
 	of_property_read_u32(np_qos, "freq_kfc", &qosdata->freq_kfc);
+#endif
 	of_property_read_u32(np_qos, "mo_value", &qosdata->mo_value);
 	of_property_read_u32(np_qos, "mo_10bit_value", &qosdata->mo_10bit_value);
 	of_property_read_u32(np_qos, "time_fw", &qosdata->time_fw);
@@ -929,32 +934,64 @@ int s5p_mfc_sysmmu_fault_handler(struct iommu_domain *iodmn, struct device *devi
 	return 0;
 }
 
-static void mfc_parse_dt(struct device_node *np, struct s5p_mfc_dev *mfc)
+static int mfc_parse_dt(struct device_node *np, struct s5p_mfc_dev *mfc)
 {
 	struct s5p_mfc_platdata	*pdata = mfc->pdata;
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
 	char node_name[50];
 	int i;
 #endif
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_mfc_qos_frequency shark_qos[8];
+	unsigned int shark_count = 0;
+	unsigned int clock_rate;
+	unsigned int min_rate;
+	int ret;
+#endif
 
 	if (!np)
-		return;
+		return 0;
 
 	of_property_read_u32(np, "ip_ver", &pdata->ip_ver);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_mfc_frequency_policy(&clock_rate, &min_rate,
+		shark_qos, ARRAY_SIZE(shark_qos), &shark_count);
+	if (ret)
+		return ret;
+	pdata->clock_rate = clock_rate;
+	pdata->min_rate = min_rate;
+#else
 	of_property_read_u32(np, "clock_rate", &pdata->clock_rate);
 	of_property_read_u32(np, "min_rate", &pdata->min_rate);
+#endif
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
 	of_property_read_u32(np, "num_qos_steps", &pdata->num_qos_steps);
 	of_property_read_u32(np, "max_mb", &pdata->max_mb);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	if (pdata->num_qos_steps != shark_count)
+		return -EINVAL;
+#endif
 
 	pdata->qos_table = devm_kzalloc(mfc->device,
 			sizeof(struct s5p_mfc_qos) * pdata->num_qos_steps, GFP_KERNEL);
+	if (!pdata->qos_table)
+		return -ENOMEM;
 
 	for (i = 0; i < pdata->num_qos_steps; i++) {
 		snprintf(node_name, sizeof(node_name), "mfc_qos_variant_%d", i);
-		mfc_parse_mfc_qos_platdata(np, node_name, &pdata->qos_table[i]);
+		if (mfc_parse_mfc_qos_platdata(np, node_name,
+					       &pdata->qos_table[i]))
+			return -EINVAL;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		pdata->qos_table[i].freq_mfc = shark_qos[i].mfc_freq;
+		pdata->qos_table[i].freq_int = shark_qos[i].int_freq;
+		pdata->qos_table[i].freq_mif = shark_qos[i].mif_freq;
+		pdata->qos_table[i].freq_cpu = shark_qos[i].cpu_freq;
+		pdata->qos_table[i].freq_kfc = shark_qos[i].kfc_freq;
+#endif
 	}
 #endif
+	return 0;
 }
 
 static void *mfc_get_drv_data(struct platform_device *pdev);
@@ -1001,7 +1038,13 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		goto err_pm;
 	}
 
-	mfc_parse_dt(dev->device->of_node, dev);
+	ret = mfc_parse_dt(dev->device->of_node, dev);
+	if (ret) {
+		dev_err(&pdev->dev,
+			"failed to initialize authoritative MFC frequency policy (%d)\n",
+			ret);
+		goto err_pm;
+	}
 
 	atomic_set(&dev->trace_ref, 0);
 	atomic_set(&dev->trace_ref_longterm, 0);

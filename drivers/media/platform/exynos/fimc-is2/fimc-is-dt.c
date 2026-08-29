@@ -20,6 +20,9 @@
 #include <exynos-fimc-is-module.h>
 #include <exynos-fimc-is-sensor.h>
 #include <exynos-fimc-is.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 #include "fimc-is-config.h"
 #include "fimc-is-dt.h"
 #include "fimc-is-core.h"
@@ -139,11 +142,34 @@ DECLARE_EXTERN_DVFS_DT(FIMC_IS_SN_END);
 static int parse_dvfs_data(struct exynos_platform_fimc_is *pdata, struct device_node *np, int index)
 {
 	int i;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_camera_qos_policy policy;
+	int ret;
+#else
 	u32 temp;
 	char *pprop;
 	char buf[64];
+#endif
 
 	for (i = 0; i < FIMC_IS_SN_END; i++) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		ret = shark_soc_get_camera_qos_policy(index,
+			fimc_is_dvfs_dt_arr[i].scenario_id, &policy);
+		if (ret)
+			return ret;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_INT_CAM] = policy.int_cam_freq;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_INT] = policy.int_freq;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_CAM] = policy.cam_freq;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_MIF] = policy.mif_freq;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_I2C] = policy.i2c_level;
+		pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id]
+			[FIMC_IS_DVFS_HPG] = policy.hpg;
+#else
 #if defined(CONFIG_SOC_EXYNOS8895)
 		sprintf(buf, "%s%s", fimc_is_dvfs_dt_arr[i].parse_scenario_nm, "int_cam");
 		DT_READ_U32(np, buf, pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id][FIMC_IS_DVFS_INT_CAM]);
@@ -162,6 +188,7 @@ static int parse_dvfs_data(struct exynos_platform_fimc_is *pdata, struct device_
 
 		sprintf(buf, "%s%s", fimc_is_dvfs_dt_arr[i].parse_scenario_nm, "hpg");
 		DT_READ_U32(np, buf, pdata->dvfs_data[index][fimc_is_dvfs_dt_arr[i].scenario_id][FIMC_IS_DVFS_HPG]);
+#endif
 	}
 
 #ifdef DBG_DUMP_DVFS_DT
@@ -191,6 +218,26 @@ static int parse_dvfs_table(struct fimc_is_dvfs_ctrl *dvfs,
 {
 	int ret = 0;
 	u32 table_cnt;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int shark_table_count;
+	unsigned int shark_scenario_count;
+
+	ret = shark_soc_get_camera_qos_dimensions(&shark_table_count,
+		&shark_scenario_count);
+	if (ret)
+		return ret;
+	if (shark_table_count > FIMC_IS_DVFS_TABLE_IDX_MAX ||
+	    shark_scenario_count != FIMC_IS_SN_END)
+		return -EINVAL;
+
+	for (table_cnt = 0; table_cnt < shark_table_count; table_cnt++) {
+		ret = parse_dvfs_data(pdata, NULL, table_cnt);
+		if (ret)
+			return ret;
+	}
+	dvfs->dvfs_table_max = shark_table_count;
+	return 0;
+#else
 	struct device_node *table_np;
 	const char *dvfs_table_desc;
 
@@ -211,6 +258,7 @@ static int parse_dvfs_table(struct fimc_is_dvfs_ctrl *dvfs,
 	dvfs->dvfs_table_max = table_cnt;
 
 	return ret;
+#endif
 }
 
 int fimc_is_parse_dt(struct platform_device *pdev)
@@ -220,7 +268,9 @@ int fimc_is_parse_dt(struct platform_device *pdev)
 	struct fimc_is_dvfs_ctrl *dvfs;
 	struct exynos_platform_fimc_is *pdata;
 	struct device *dev;
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	struct device_node *dvfs_np = NULL;
+#endif
 	struct device_node *vender_np = NULL;
 	struct device_node *np;
 
@@ -267,12 +317,20 @@ int fimc_is_parse_dt(struct platform_device *pdev)
 		goto p_err;
 	}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = parse_dvfs_table(dvfs, pdata, NULL);
+	if (ret) {
+		probe_err("Shark camera QoS policy is unavailable(%d)", ret);
+		goto p_err;
+	}
+#else
 	dvfs_np = of_find_node_by_name(np, "fimc_is_dvfs");
 	if (dvfs_np) {
 		ret = parse_dvfs_table(dvfs, pdata, dvfs_np);
 		if (ret)
 			probe_err("parse_dvfs_table is fail(%d)", ret);
 	}
+#endif
 
 	dev->platform_data = pdata;
 

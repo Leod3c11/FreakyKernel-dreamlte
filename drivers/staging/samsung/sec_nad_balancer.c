@@ -19,6 +19,9 @@
 
 #include <linux/sec_nad_balancer.h>
 #include <linux/sec_ext.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #define NAD_PRINT(format, ...) pr_info("[NAD_BALANCER] " format, ##__VA_ARGS__)
 #define DEBUG_NAD_BALANCER
@@ -37,6 +40,12 @@ static int parse_qos_data(struct device *dev,
 	u32 freq_item;
 
 	for_each_child_of_node(np, cnp) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		u32 *shark_rates;
+		unsigned int shark_count = 0;
+		int ret;
+#endif
+
 		cqos = &pdata->qos_items[ncount];
 
 		cqos->desc = of_get_property(cnp, "qos,label", NULL);
@@ -61,9 +70,23 @@ static int parse_qos_data(struct device *dev,
 			}
 		}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		shark_rates = devm_kzalloc(dev,
+			sizeof(*shark_rates) * cqos->table_size, GFP_KERNEL);
+		if (!shark_rates)
+			return -ENOMEM;
+		ret = shark_soc_get_nad_frequency_table(cqos->desc, shark_rates,
+			cqos->table_size, &shark_count);
+		if (ret || shark_count != cqos->table_size)
+			return ret ? ret : -EINVAL;
+#endif
 		for (i = 0; i < cqos->table_size; i++) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+			freq_item = shark_rates[i];
+#else
 			if (of_property_read_u32_index(cnp, "qos,table", i, &freq_item))
 				return -EINVAL;
+#endif
 
 			cqos->tables[i].freq = freq_item;
 		}

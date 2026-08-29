@@ -116,8 +116,12 @@ config SHARK_CUSTOM_DVFS
 	help
 	  Publish the validated Exynos8895 clock, PLL, ASV, timing, thermal
 	  and minlock catalog generated from all_dump, then merge its rate
-	  policy with the live per-chip FVMap voltages. Incompatible ECT or
-	  FVMap shapes are rejected without replacing the firmware tables.
+	  policy with the live per-chip FVMap voltages. CPUFreq, Devfreq,
+	  UFC, DVFS Manager, Mali, HMP, camera/media QoS, G2D, input boost,
+	  storage, PCIe, UART, audio and workload boosters consume their frequency
+	  policies from this interface. Incompatible or missing data abort
+	  initialization; there is no DTS frequency-table fallback while
+	  Shark is enabled.
 	  This option is intended for the Galaxy S8 Exynos8895 platform.
 
 config VDD_AUTO_CAL

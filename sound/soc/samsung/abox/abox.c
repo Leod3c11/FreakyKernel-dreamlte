@@ -35,6 +35,9 @@
 
 #include <soc/samsung/exynos-pmu.h>
 #include <soc/samsung/exynos-itmon.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 #include <misc/exynos_ima.h>
 #include "../../../../drivers/iommu/exynos-iommu.h"
 
@@ -5503,12 +5506,27 @@ static int samsung_abox_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[5];
+		unsigned int shark_count = 0;
+		unsigned int i;
+
+		ret = shark_soc_get_client_qos_table("abox-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(data->pm_qos_int))
+			return ret ? ret : -EINVAL;
+		for (i = 0; i < shark_count; i++)
+			data->pm_qos_int[i] = shark_qos[i];
+	}
+#else
 	ret = of_property_read_u32_array(np, "pm_qos_int",
 			data->pm_qos_int, ARRAY_SIZE(data->pm_qos_int));
 	if (IS_ERR_VALUE(ret)) {
 		dev_err(dev, "Failed to read %s: %d\n", "pm_qos_int", ret);
 		return ret;
 	}
+#endif
 
 	np_tmp = of_parse_phandle(np, "abox_gic", 0);
 	if (!np_tmp) {

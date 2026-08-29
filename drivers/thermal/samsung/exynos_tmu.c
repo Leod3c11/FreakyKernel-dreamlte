@@ -45,6 +45,9 @@
 #include <linux/cpu.h>
 #include <linux/exynos-cpufreq.h>
 #include <soc/samsung/tmu.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-mcinfo.h>
 #include <dt-bindings/thermal/thermal_exynos.h>
@@ -1242,6 +1245,31 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 #ifdef CONFIG_GPU_THERMAL
 static int gpu_cooling_table_init(struct platform_device *pdev)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_gpu_dvfs_entry policy[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	unsigned int i;
+	int ret;
+
+	ret = shark_soc_get_gpu_dvfs_table(policy, ARRAY_SIZE(policy), &count);
+	if (ret)
+		return ret;
+	if (!count || count >= ARRAY_SIZE(gpu_freq_table))
+		return -EINVAL;
+
+	for (i = 0; i < count; i++) {
+		gpu_freq_table[i].flags = 0;
+		gpu_freq_table[i].driver_data = i;
+		gpu_freq_table[i].frequency = policy[i].clock;
+		dev_info(&pdev->dev,
+			 "[GPU TMU] Shark index: %u, frequency: %u\n",
+			 i, policy[i].clock);
+	}
+	gpu_freq_table[count].flags = 0;
+	gpu_freq_table[count].driver_data = count;
+	gpu_freq_table[count].frequency = CPUFREQ_TABLE_END;
+	return 0;
+#else
 	struct cpufreq_frequency_table *table_ptr;
 	unsigned int table_size;
 	u32 gpu_idx_num = 0;
@@ -1275,6 +1303,7 @@ static int gpu_cooling_table_init(struct platform_device *pdev)
 		kfree(table_ptr);
 	}
 	return ret;
+#endif
 }
 #else
 static int gpu_cooling_table_init(struct platform_device *pdev) {return 0;}

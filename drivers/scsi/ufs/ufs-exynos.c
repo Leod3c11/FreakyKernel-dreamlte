@@ -24,6 +24,9 @@
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 #include <linux/soc/samsung/exynos-soc.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 /*
  * Unipro attribute value
@@ -2179,8 +2182,21 @@ static int exynos_ufs_populate_dt(struct device *dev, struct exynos_ufs *ufs)
 			dev_warn(dev, "ufs-pa-hibern8time is empty\n");
 	}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[1];
+		unsigned int shark_count = 0;
+
+		ret = shark_soc_get_client_qos_table("ufs-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(shark_qos))
+			return ret ? ret : -EINVAL;
+		ufs->pm_qos_int_value = shark_qos[0];
+	}
+#else
 	if (of_property_read_u32(np, "ufs-pm-qos-int", &ufs->pm_qos_int_value))
 		ufs->pm_qos_int_value = 0;
+#endif
 
 #if !defined(CONFIG_SOC_EXYNOS7420) && !defined(CONFIG_SOC_EXYNOS8890)
         ufs->pmureg = syscon_regmap_lookup_by_phandle(np,

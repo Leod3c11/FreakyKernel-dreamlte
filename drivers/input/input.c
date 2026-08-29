@@ -27,6 +27,9 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 #include "input-compat.h"
 
 #if !defined(CONFIG_INPUT_BOOSTER) // Input Booster +
@@ -684,6 +687,10 @@ void input_booster_init()
 	// ********** Load Frequncy data from DTSI **********
 	struct device_node *np;
 	int nlevels = 0, i;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_input_boost_frequency shark_frequency;
+	int ret;
+#endif
 
 	printk("[Input Booster] %s\n", __FUNCTION__);
 
@@ -699,6 +706,15 @@ void input_booster_init()
 		printk("[Input Booster] %s    np is NULL\n", __FUNCTION__);
 		return;
 	}
+
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_input_boost_frequency(&shark_frequency);
+	if (ret) {
+		pr_err("Input Booster: Shark frequency policy unavailable (%d)\n",
+		       ret);
+		return;
+	}
+#endif
 
 	// Geting the count of devices.
 	ndevice_in_dt = of_get_child_count(np);
@@ -749,10 +765,17 @@ void input_booster_init()
 				int err = 0;
 
 				err = of_property_read_u32_index(cnp, "input_booster,levels", i, &temp);  dt_infor->param_tables[i].ilevels = (u8)temp;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+				dt_infor->param_tables[i].cpu_freq = shark_frequency.cpu_freq;
+				dt_infor->param_tables[i].kfc_freq = shark_frequency.kfc_freq;
+				dt_infor->param_tables[i].mif_freq = shark_frequency.mif_freq;
+				dt_infor->param_tables[i].int_freq = shark_frequency.int_freq;
+#else
 				err |= of_property_read_u32_index(cnp, "input_booster,cpu_freqs", i, &dt_infor->param_tables[i].cpu_freq);
 				err |= of_property_read_u32_index(cnp, "input_booster,kfc_freqs", i, &dt_infor->param_tables[i].kfc_freq);
 				err |= of_property_read_u32_index(cnp, "input_booster,mif_freqs", i, &dt_infor->param_tables[i].mif_freq);
 				err |= of_property_read_u32_index(cnp, "input_booster,int_freqs", i, &dt_infor->param_tables[i].int_freq);
+#endif
 				err |= of_property_read_u32_index(cnp, "input_booster,hmp_boost", i, &temp); dt_infor->param_tables[i].hmp_boost = (u8)temp;
 				err |= of_property_read_u32_index(cnp, "input_booster,head_times", i, &temp); dt_infor->param_tables[i].head_time = (u16)temp;
 				err |= of_property_read_u32_index(cnp, "input_booster,tail_times", i, &temp); dt_infor->param_tables[i].tail_time = (u16)temp;

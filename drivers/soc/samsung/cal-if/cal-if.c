@@ -3,7 +3,7 @@
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-#include <soc/samsung/exynos-soc-interface.h>
+#include <soc/samsung/exynos-soc_interface.h>
 #endif
 
 #include "pwrcal-env.h"
@@ -62,19 +62,23 @@ typedef int (*cal_shark_policy_getter_t)(const char *, unsigned int,
 					 unsigned int *);
 
 static unsigned long cal_shark_get_policy(unsigned int id,
-					  cal_shark_policy_getter_t getter,
-					  unsigned long fallback)
+					  cal_shark_policy_getter_t getter)
 {
 	struct vclk *vclk;
 	unsigned int rate;
 	int ret;
 
 	ret = cal_shark_get_domain(id, &vclk, NULL, NULL);
-	if (ret)
-		return fallback;
+	if (ret) {
+		pr_err("Shark DVFS: domain 0x%x is unavailable (%d)\n", id, ret);
+		return 0;
+	}
 	ret = getter(vclk->name, id, &rate);
-	if (ret)
-		return fallback;
+	if (ret) {
+		pr_err("Shark DVFS: policy for %s is unavailable (%d)\n",
+		       vclk->name, ret);
+		return 0;
+	}
 	return rate;
 }
 #endif
@@ -87,8 +91,7 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-	return cal_shark_get_policy(id, shark_soc_get_domain_max_freq,
-		vclk_get_max_freq(id));
+	return cal_shark_get_policy(id, shark_soc_get_domain_max_freq);
 #else
 	return vclk_get_max_freq(id);
 #endif
@@ -97,8 +100,7 @@ unsigned long cal_dfs_get_max_freq(unsigned int id)
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-	return cal_shark_get_policy(id, shark_soc_get_domain_min_freq,
-		vclk_get_min_freq(id));
+	return cal_shark_get_policy(id, shark_soc_get_domain_min_freq);
 #else
 	return vclk_get_min_freq(id);
 #endif
@@ -108,16 +110,30 @@ unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
 	unsigned int count;
+	int ret;
 
-	if (!cal_shark_get_domain(id, NULL, NULL, &count))
-		return count;
-#endif
+	ret = cal_shark_get_domain(id, NULL, NULL, &count);
+	if (ret) {
+		pr_err("Shark DVFS: level table for 0x%x is unavailable (%d)\n",
+		       id, ret);
+		return 0;
+	}
+	return count;
+#else
 	return vclk_get_lv_num(id);
+#endif
 }
 
 int cal_dfs_get_bigturbo_max_freq(unsigned int *table)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int count;
+
+	return shark_soc_get_bigturbo_table(asv_get_table_ver(), table, 4U,
+					    &count);
+#else
 	return vclk_get_bigturbo_table(table);
+#endif
 }
 
 int cal_dfs_set_rate(unsigned int id, unsigned long rate)
@@ -129,13 +145,16 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
 		unsigned int resolved;
 
-		if (!cal_shark_get_domain(id, &vclk, NULL, NULL) &&
-		    !shark_soc_resolve_rate(vclk->name, id, rate, &resolved)) {
-			if (rate != resolved)
-				pr_debug("Shark DVFS: %s request %lu -> %u kHz\n",
-					 vclk->name, rate, resolved);
-			rate = resolved;
-		}
+		ret = cal_shark_get_domain(id, &vclk, NULL, NULL);
+		if (ret)
+			return ret;
+		ret = shark_soc_resolve_rate(vclk->name, id, rate, &resolved);
+		if (ret)
+			return ret;
+		if (rate != resolved)
+			pr_debug("Shark DVFS: %s request %lu -> %u kHz\n",
+				 vclk->name, rate, resolved);
+		rate = resolved;
 #endif
 		ret = exynos_acpm_set_rate(GET_IDX(id), rate);
 		if (!ret) {
@@ -197,16 +216,17 @@ int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 		unsigned int i;
 
 		ret = cal_shark_get_domain(id, NULL, rates, &count);
-		if (!ret) {
-			for (i = 0; i < count; i++)
-				table[i] = rates[i];
-			return count;
-		}
+		if (ret)
+			return ret;
+		for (i = 0; i < count; i++)
+			table[i] = rates[i];
+		return count;
 	}
-#endif
+#else
 	ret = vclk_get_rate_table(id, table);
 
 	return ret;
+#endif
 }
 
 int cal_clk_setrate(unsigned int id, unsigned long rate)
@@ -257,8 +277,7 @@ int cal_qch_init(unsigned int id, unsigned int use_qch)
 unsigned int cal_dfs_get_boot_freq(unsigned int id)
 {
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-	return cal_shark_get_policy(id, shark_soc_get_domain_boot_freq,
-		vclk_get_boot_freq(id));
+	return cal_shark_get_policy(id, shark_soc_get_domain_boot_freq);
 #else
 	return vclk_get_boot_freq(id);
 #endif
@@ -267,8 +286,7 @@ unsigned int cal_dfs_get_boot_freq(unsigned int id)
 unsigned int cal_dfs_get_resume_freq(unsigned int id)
 {
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-	return cal_shark_get_policy(id, shark_soc_get_domain_resume_freq,
-		vclk_get_resume_freq(id));
+	return cal_shark_get_policy(id, shark_soc_get_domain_resume_freq);
 #else
 	return vclk_get_resume_freq(id);
 #endif
@@ -348,7 +366,27 @@ int cal_cluster_status(unsigned int cluster)
 
 int cal_dfs_get_asv_table(unsigned int id, unsigned int *table)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	struct vclk *vclk;
+	unsigned int i;
+	int ret;
+
+	ret = cal_shark_get_domain(id, &vclk, NULL, NULL);
+	if (ret)
+		return ret;
+	ret = shark_soc_get_domain_table(vclk->name, id, rates, table,
+					 ARRAY_SIZE(rates), &count);
+	if (ret)
+		return ret;
+	for (i = 0; i < count; i++)
+		if (!table[i])
+			return -ENODATA;
+	return count;
+#else
 	return fvmap_get_voltage_table(id, table);
+#endif
 }
 
 void cal_dfs_set_volt_margin(unsigned int id, int volt)
@@ -405,7 +443,9 @@ int __init cal_if_init(void *dev)
 
 	ect_parse_binary_header();
 
-	vclk_initialize();
+	ret = vclk_initialize();
+	if (ret < 0)
+		return ret;
 
 	if (cal_data_init)
 		cal_data_init();

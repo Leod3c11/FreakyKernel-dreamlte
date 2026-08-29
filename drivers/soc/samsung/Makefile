@@ -23,7 +23,7 @@ obj-$(CONFIG_EXYNOS_RGT)        += exynos-rgt.o
 obj-$(CONFIG_EXYNOS_PM_DVS)        += exynos-pm-dvs.o
 
 obj-$(CONFIG_ECT)		+= ect_parser.o
-obj-$(CONFIG_SHARK_CUSTOM_DVFS)	+= exynos-soc-interface.o
+obj-$(CONFIG_SHARK_CUSTOM_DVFS)	+= exynos-soc_interface.o
 obj-$(CONFIG_EXYNOS_BCM)	+= exynos-bcm.o
 obj-$(CONFIG_EXYNOS_WD_DVFS)		+= pmu_count.o
 

@@ -47,6 +47,9 @@
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <soc/samsung/exynos-pmu.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #ifdef CONFIG_SND_SAMSUNG_AUDSS
 #include <sound/exynos.h>
@@ -2126,6 +2129,34 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	dbg("%s: initialising port %p...\n", __func__, ourport);
 
 #ifdef CONFIG_ARM_EXYNOS_DEVFREQ
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int mif_qos[1];
+		unsigned int cpu_qos[1];
+		unsigned int count = 0;
+
+		ret = shark_soc_get_client_qos_table("uart-mif", mif_qos,
+			ARRAY_SIZE(mif_qos), &count);
+		if (ret || count != ARRAY_SIZE(mif_qos)) {
+			dev_err(&pdev->dev,
+				"Shark DVFS: UART MIF QoS policy unavailable (%d, %u)\n",
+				ret, count);
+			return ret ? ret : -EINVAL;
+		}
+		ourport->mif_qos_val = mif_qos[0];
+
+		count = 0;
+		ret = shark_soc_get_client_qos_table("uart-cpu", cpu_qos,
+			ARRAY_SIZE(cpu_qos), &count);
+		if (ret || count != ARRAY_SIZE(cpu_qos)) {
+			dev_err(&pdev->dev,
+				"Shark DVFS: UART CPU QoS policy unavailable (%d, %u)\n",
+				ret, count);
+			return ret ? ret : -EINVAL;
+		}
+		ourport->cpu_qos_val = cpu_qos[0];
+	}
+#else
 	if (of_property_read_u32(pdev->dev.of_node, "mif_qos_val",
 						&ourport->mif_qos_val))
 		ourport->mif_qos_val = 0;
@@ -2133,6 +2164,7 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	if (of_property_read_u32(pdev->dev.of_node, "cpu_qos_val",
 						&ourport->cpu_qos_val))
 		ourport->cpu_qos_val = 0;
+#endif
 
 	if (of_property_read_u32(pdev->dev.of_node, "irq_affinity",
 						&ourport->uart_irq_affinity))

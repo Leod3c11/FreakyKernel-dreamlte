@@ -31,6 +31,9 @@
 
 #include <soc/samsung/exynos-pm.h>
 #include <soc/samsung/exynos-powermode.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "pcie-designware.h"
 #include "pci-exynos.h"
@@ -1112,6 +1115,9 @@ static int exynos_pcie_parse_dt(struct device_node *np, struct pcie_port *pp)
 	const char *use_cache_coherency;
 	const char *use_msi;
 	const char *use_sicd;
+#if defined(CONFIG_PM_DEVFREQ) && defined(CONFIG_SHARK_CUSTOM_DVFS)
+	int ret;
+#endif
 
 	if (of_property_read_u32(np, "ip-ver", &exynos_pcie->ip_ver)) {
 		dev_err(pp->dev, "Failed to parse the number of ip-ver\n");
@@ -1193,8 +1199,21 @@ static int exynos_pcie_parse_dt(struct device_node *np, struct pcie_port *pp)
 	}
 
 #ifdef CONFIG_PM_DEVFREQ
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[1];
+		unsigned int shark_count = 0;
+
+		ret = shark_soc_get_client_qos_table("pcie-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(shark_qos))
+			return ret ? ret : -EINVAL;
+		exynos_pcie->int_min_lock = shark_qos[0];
+	}
+#else
 	if (of_property_read_u32(np, "pcie-pm-qos-int", &exynos_pcie->int_min_lock))
 		exynos_pcie->int_min_lock = 0;
+#endif
 
 	if (exynos_pcie->int_min_lock)
 		pm_qos_add_request(&exynos_pcie_int_qos[exynos_pcie->ch_num],

@@ -20,6 +20,9 @@
 #include <linux/mutex.h>
 #include <linux/wait.h>
 #include <linux/exynos_iovmm.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-ion.h>
@@ -908,6 +911,24 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[1];
+		unsigned int shark_count = 0;
+
+		ret = shark_soc_get_client_qos_table("smfc-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(shark_qos))
+			return ret ? ret : -EINVAL;
+		smfc->qosreq_int_level = shark_qos[0];
+	}
+	if (smfc->qosreq_int_level > 0) {
+		pm_qos_add_request(&smfc->qosreq_int,
+			PM_QOS_DEVICE_THROUGHPUT, 0);
+		dev_info(&pdev->dev, "INT Min.Lock Freq. = %d\n",
+			smfc->qosreq_int_level);
+	}
+#else
 	if (!of_property_read_u32(pdev->dev.of_node, "smfc,int_qos_minlock",
 				(u32 *)&smfc->qosreq_int_level)) {
 		if (smfc->qosreq_int_level > 0) {
@@ -919,6 +940,7 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 			smfc->qosreq_int_level = 0;
 		}
 	}
+#endif
 
 	ret = smfc_find_hw_version(&pdev->dev, smfc);
 	if (ret < 0)

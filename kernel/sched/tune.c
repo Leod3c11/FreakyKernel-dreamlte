@@ -4,6 +4,9 @@
 #include <linux/printk.h>
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
+#if defined(CONFIG_FREQVAR_SCHEDTUNE) && defined(CONFIG_SHARK_CUSTOM_DVFS)
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "sched.h"
 #include "tune.h"
@@ -465,6 +468,7 @@ static int schedtune_freqvar_cpufreq_callback(struct notifier_block *nb,
 	return 0;
 }
 
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 static int schedtune_freqvar_find_node(struct device_node **dn,
 					struct cpufreq_policy *policy)
 {
@@ -493,6 +497,7 @@ static int schedtune_freqvar_find_node(struct device_node **dn,
 
 	return -EINVAL;
 }
+#endif
 
 /*
  * update freqvar_boost table from src table .
@@ -534,6 +539,7 @@ int schedtune_freqvar_update_table(unsigned int *src, int src_size,
 	return 0;
 }
 
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 static int schedtune_freqvar_parse_dt(struct device_node *dn,
 				struct freqvar_boost_data *data)
 {
@@ -554,6 +560,7 @@ static int schedtune_freqvar_parse_dt(struct device_node *dn,
 
 	return 0;
 }
+#endif
 
 static int schedtune_freqvar_init_table(struct cpufreq_policy *policy,
 					struct freqvar_boost_data *data)
@@ -620,20 +627,37 @@ void schedtune_freqvar_boost_enable(int cpu, int index,
 int schedtune_freqvar_boost_init(struct cpufreq_policy *policy,
 					struct freqvar_boost_data *data)
 {
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	struct device_node *dn = NULL;
+#else
+	unsigned int shark_table[11];
+	unsigned int shark_count = 0;
+	int ret;
+#endif
 	int cur_index = cpufreq_frequency_table_get_index(policy, policy->cur);
 	int cpu;
 
 	if (!freqvar_boost_state[policy->cpu].table) {
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 		/* find device node */
 		if (schedtune_freqvar_find_node(&dn, policy))
 			return 0;
+#endif
 		/* copy cpu frequency table */
 		if (schedtune_freqvar_init_table(policy, data))
 			return 0;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		ret = shark_soc_get_schedtune_freqvar_table(policy->cpu,
+			shark_table, ARRAY_SIZE(shark_table), &shark_count);
+		if (ret)
+			goto free;
+		schedtune_freqvar_update_table(shark_table, shark_count,
+			data->table);
+#else
 		/* update boost value from dt */
 		if (schedtune_freqvar_parse_dt(dn, data))
 			goto free;
+#endif
 	} else {
 		data->table = freqvar_boost_state[policy->cpu].table;
 	}
@@ -644,7 +668,7 @@ int schedtune_freqvar_boost_init(struct cpufreq_policy *policy,
 	return 0;
 
 free:
-	pr_err("SchedTune: faile to initialize\n");
+	pr_err("SchedTune: failed to initialize authoritative frequency table\n");
 	kfree(data->table);
 
 	return 0;

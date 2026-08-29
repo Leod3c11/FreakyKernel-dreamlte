@@ -26,6 +26,9 @@
 #include <linux/cpumask.h>
 #include <linux/interrupt.h>
 #include <linux/sec_argos.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #define ARGOS_NAME "argos"
 #define TYPE_SHIFT 4
@@ -634,6 +637,11 @@ static int argos_parse_dt(struct device *dev)
 	}
 
 	for_each_child_of_node(np, cnp) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		struct shark_soc_argos_frequency *shark_table;
+		unsigned int shark_count = 0;
+#endif
+
 		cnode = &pdata->devices[device_count];
 		cnode->desc = of_get_property(cnp, "net_boost,label", NULL);
 		if (of_property_read_u32(cnp, "net_boost,table_size", &num_level)) {
@@ -654,9 +662,32 @@ static int argos_parse_dt(struct device *dev)
 			}
 		}
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		shark_table = devm_kzalloc(dev,
+			sizeof(*shark_table) * num_level, GFP_KERNEL);
+		if (!shark_table) {
+			retval = -ENOMEM;
+			goto err_out;
+		}
+		retval = shark_soc_get_argos_frequency_table(cnode->desc,
+			shark_table, num_level, &shark_count);
+		if (retval || shark_count != num_level) {
+			if (!retval)
+				retval = -EINVAL;
+			dev_err(dev,
+				"Shark Argos policy mismatch for %s (%d, %u/%d)\n",
+				cnode->desc, retval, shark_count, num_level);
+			goto err_out;
+		}
+#endif
+
 		/* Get and add frequncy and time table */
 		for (i = 0; i < num_level; i++) {
 			for (j = 0; j < ITEM_MAX; j++) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+				if (j >= CPU_MIN_FREQ && j <= INTFREQ)
+					continue;
+#endif
 				if (of_property_read_u32_index(cnp,
 						"net_boost,table",
 						i * ITEM_MAX + j,
@@ -666,6 +697,20 @@ static int argos_parse_dt(struct device *dev)
 					goto err_out;
 				}
 			}
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+			cnode->tables[i].items[CPU_MIN_FREQ] =
+				shark_table[i].cpu_min_freq;
+			cnode->tables[i].items[CPU_MAX_FREQ] =
+				shark_table[i].cpu_max_freq;
+			cnode->tables[i].items[KFC_MIN_FREQ] =
+				shark_table[i].kfc_min_freq;
+			cnode->tables[i].items[KFC_MAX_FREQ] =
+				shark_table[i].kfc_max_freq;
+			cnode->tables[i].items[MIFFREQ] =
+				shark_table[i].mif_freq;
+			cnode->tables[i].items[INTFREQ] =
+				shark_table[i].int_freq;
+#endif
 		}
 
 		INIT_LIST_HEAD(&cnode->task_affinity_list);

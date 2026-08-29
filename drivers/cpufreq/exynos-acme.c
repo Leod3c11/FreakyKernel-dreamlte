@@ -22,6 +22,9 @@
 #include <soc/samsung/cal-if.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-earlytmu.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "exynos-acme.h"
 
@@ -972,21 +975,31 @@ static __init int get_jig_status(char *arg)
 early_param("jig", get_jig_status);
 #endif
 
-static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
-					struct device_node *dn)
+static __init int set_boot_qos(struct exynos_cpufreq_domain *domain,
+				       struct device_node *dn)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_cpu_policy shark_policy;
+#endif
 	unsigned int boot_qos, val;
 	int freq;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	int ret;
+#endif
 
-	/*
-	 * Basically booting pm_qos is set to max frequency of domain.
-	 * But if pm_qos-booting exists in device tree,
-	 * booting pm_qos is selected to smaller one
-	 * between max frequency of domain and the value defined in device tree.
-	 */
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_cpu_policy(NULL, domain->cal_id, &shark_policy);
+	if (ret) {
+		pr_err("Shark DVFS: CPU policy for domain%d is unavailable (%d)\n",
+		       domain->id, ret);
+		return ret;
+	}
+	boot_qos = shark_policy.boot_qos;
+#else
 	boot_qos = domain->max_freq;
 	if (!of_property_read_u32(dn, "pm_qos-booting", &val))
 		boot_qos = min(boot_qos, val);
+#endif
 
 	/*
 	 * Before setting booting pm_qos, ACME driver check thermal condition.
@@ -1021,7 +1034,13 @@ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
 #if defined(CONFIG_SEC_PM) && defined(CONFIG_SEC_FACTORY)
 	pr_info("%s:jig_attached = %d\n", __func__, jig_attached);
 
-	if(jig_attached && !of_property_read_u32(dn, "pm_qos-jigbooting", &val)) {	
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	if (jig_attached && shark_policy.jig_boot_qos) {
+		val = shark_policy.jig_boot_qos;
+#else
+	if (jig_attached &&
+	    !of_property_read_u32(dn, "pm_qos-jigbooting", &val)) {
+#endif
 		pm_qos_update_request_timeout(&domain->max_qos_req,
 				val, 100 * USEC_PER_SEC);
 		
@@ -1029,6 +1048,8 @@ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
 			__func__, val, domain->id);
 	}
 #endif
+
+	return 0;
 }
 
 static __init int init_pm_qos(struct exynos_cpufreq_domain *domain,
@@ -1061,11 +1082,14 @@ static __init int init_pm_qos(struct exynos_cpufreq_domain *domain,
 	pm_qos_add_request(&domain->max_qos_req,
 			domain->pm_qos_max_class, domain->max_freq);
 
-	set_boot_qos(domain, dn);
+	ret = set_boot_qos(domain, dn);
+	if (ret)
+		return ret;
 
 	return 0;
 }
 
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 static int init_constraint_table_ect(struct exynos_cpufreq_domain *domain,
 					struct exynos_cpufreq_dm *dm,
 					struct device_node *dn)
@@ -1117,19 +1141,52 @@ static int init_constraint_table_ect(struct exynos_cpufreq_domain *domain,
 
 	return 0;
 }
+#endif
 
-static int init_constraint_table_dt(struct exynos_cpufreq_domain *domain,
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+static int init_constraint_table_policy(struct exynos_cpufreq_domain *domain,
+					struct exynos_cpufreq_dm *dm,
+					struct device_node *dn)
+{
+	unsigned int master[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int constraint[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	int index, c_index;
+	int ret;
+
+	ret = shark_soc_get_dm_constraint_table(NULL, domain->cal_id, master,
+		constraint, ARRAY_SIZE(master), &count);
+	if (ret)
+		return ret;
+
+	for (index = 0; index < domain->table_size; index++) {
+		unsigned int freq = domain->freq_table[index].frequency;
+
+		if (freq == CPUFREQ_ENTRY_INVALID)
+			continue;
+
+		for (c_index = 0; c_index < count; c_index++) {
+			/* find row same or nearby frequency */
+			if (freq <= master[c_index])
+				dm->c.freq_table[index].constraint_freq
+					= constraint[c_index];
+
+			if (freq >= master[c_index])
+				break;
+
+		}
+	}
+
+	return 0;
+}
+#else
+static int init_constraint_table_policy(struct exynos_cpufreq_domain *domain,
 					struct exynos_cpufreq_dm *dm,
 					struct device_node *dn)
 {
 	struct exynos_dm_freq *table;
 	int size, index, c_index;
 
-	/*
-	 * A DVFS Manager table row consists of CPU and MIF frequency
-	 * value, the size of a row is 64bytes. Divide size in half when
-	 * table is allocated.
-	 */
 	size = of_property_count_u32_elems(dn, "table");
 	if (size < 0)
 		return size;
@@ -1144,22 +1201,19 @@ static int init_constraint_table_dt(struct exynos_cpufreq_domain *domain,
 
 		if (freq == CPUFREQ_ENTRY_INVALID)
 			continue;
-
 		for (c_index = 0; c_index < size / 2; c_index++) {
-			/* find row same or nearby frequency */
 			if (freq <= table[c_index].master_freq)
-				dm->c.freq_table[index].constraint_freq
-					= table[c_index].constraint_freq;
-
+				dm->c.freq_table[index].constraint_freq =
+					table[c_index].constraint_freq;
 			if (freq >= table[c_index].master_freq)
 				break;
-
 		}
 	}
 
 	kfree(table);
 	return 0;
 }
+#endif
 
 static int init_dm(struct exynos_cpufreq_domain *domain,
 				struct device_node *dn)
@@ -1197,12 +1251,16 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 
 		if (of_property_read_bool(child, "guidance")) {
 			dm->c.guidance = true;
-			if (init_constraint_table_ect(domain, dm, child))
-				continue;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+			ret = init_constraint_table_policy(domain, dm, child);
+#else
+			ret = init_constraint_table_ect(domain, dm, child);
+#endif
 		} else {
-			if (init_constraint_table_dt(domain, dm, child))
-				continue;
+			ret = init_constraint_table_policy(domain, dm, child);
 		}
+		if (ret)
+			return ret;
 
 		dm->c.table_length = domain->table_size;
 
@@ -1215,10 +1273,12 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 }
 
 static __init int init_domain(struct exynos_cpufreq_domain *domain,
-					struct device_node *dn)
+				 struct device_node *dn)
 {
-	unsigned int val;
 	int ret;
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int val;
+#endif
 
 	mutex_init(&domain->lock);
 
@@ -1226,45 +1286,50 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 	domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
 	domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
 
-	/*
-	 * If max-freq property exists in device tree, max frequency is
-	 * selected to smaller one between the value defined in device
-	 * tree and CAL. In case of min-freq, min frequency is selected
-	 * to bigger one.
-	 */
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
+	/* Preserve the legacy DTS caps when Shark is not selected. */
 	if (!of_property_read_u32(dn, "max-freq", &val))
 		domain->max_freq = val;
 	if (!of_property_read_u32(dn, "min-freq", &val))
 		domain->min_freq = val;
+#endif
 
 	domain->boot_freq = cal_dfs_get_boot_freq(domain->cal_id);
 	domain->resume_freq = cal_dfs_get_resume_freq(domain->cal_id);
+	if (!domain->max_freq || !domain->min_freq || !domain->boot_freq ||
+	    !domain->resume_freq) {
+		pr_err("Shark DVFS: incomplete CPU policy for domain%d\n",
+		       domain->id);
+		return -ENODATA;
+	}
 
 	/* Initialize freq boost */
 	if (domain->boost_supported) {
 		unsigned int i, cpu_count = cpumask_weight(&domain->cpus);
 
-		cal_dfs_get_bigturbo_max_freq(domain->boost_max_freqs);
+		ret = cal_dfs_get_bigturbo_max_freq(domain->boost_max_freqs);
+		if (ret) {
+			pr_err("DVFS: BIGTURBO policy is unavailable (%d)\n",
+			       ret);
+			return ret;
+		}
+
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 		if (of_find_property(dn, "boost_max_freqs", NULL)) {
 			unsigned int *max_freqs;
 
-			max_freqs = kzalloc(sizeof(unsigned int) * cpu_count, GFP_KERNEL);
+			max_freqs = kzalloc(sizeof(unsigned int) * cpu_count,
+					       GFP_KERNEL);
 			if (!max_freqs)
 				return -ENOMEM;
-
 			of_property_read_u32_array(dn, "boost_max_freqs",
-						max_freqs, cpu_count);
-
-			/*
-			 * If boost_max_freqs property exists in device tree,
-			 * frequency is selected to smaller one.
-			 */
+					   max_freqs, cpu_count);
 			for (i = 0; i < cpu_count; i++)
 				domain->boost_max_freqs[i] =
 					min(domain->boost_max_freqs[i], max_freqs[i]);
-
 			kfree(max_freqs);
 		}
+#endif
 
 		for (i = 0; i < cpu_count; i++) {
 			if (domain->boost_max_freqs[i] < domain->min_freq) {
@@ -1296,7 +1361,9 @@ init_table:
 	 * Initialize CPUFreq DVFS Manager
 	 * DVFS Manager is the optional function, it does not check return value
 	 */
-	init_dm(domain, dn);
+	ret = init_dm(domain, dn);
+	if (ret)
+		return ret;
 
 	pr_info("Complete to initialize cpufreq-domain%d\n", domain->id);
 

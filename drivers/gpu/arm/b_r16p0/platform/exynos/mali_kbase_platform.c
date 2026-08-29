@@ -28,7 +28,7 @@
 #include <linux/of.h>
 #endif
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-#include <soc/samsung/exynos-soc-interface.h>
+#include <soc/samsung/exynos-soc_interface.h>
 #endif
 #ifdef CONFIG_MALI_DVFS
 #ifdef CONFIG_CAL_IF
@@ -36,17 +36,63 @@
 #endif
 static gpu_dvfs_info gpu_dvfs_table_default[DVFS_TABLE_ROW_MAX];
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-static int gpu_shark_rate(int rate)
+static int gpu_apply_shark_frequency_policy(struct exynos_context *platform,
+					    unsigned int *table_count)
 {
-	unsigned int resolved;
+	struct shark_soc_gpu_dvfs_entry entries[DVFS_TABLE_ROW_MAX];
+	unsigned int thermal[TMU_LOCK_CLK_END];
+	unsigned int thermal_count = 0;
+	unsigned int mif_max;
+	unsigned int gpu_max;
+	unsigned int gpu_min;
+	unsigned int count = 0;
+	unsigned int i;
+	int ret;
 
-	if (rate <= 0)
-		return rate;
-	if (!shark_soc_resolve_rate("dvfs_g3d",
-				    SHARK_SOC_DOMAIN_ID_ANY,
-				    rate, &resolved))
-		return resolved;
-	return rate;
+	ret = shark_soc_get_gpu_dvfs_table(entries, ARRAY_SIZE(entries),
+					   &count);
+	if (ret || !count)
+		return ret ? ret : -ENODATA;
+	ret = shark_soc_get_domain_max_freq("dvfs_g3d",
+		platform->g3d_cmu_cal_id, &gpu_max);
+	if (ret)
+		return ret;
+	ret = shark_soc_get_domain_min_freq("dvfs_g3d",
+		platform->g3d_cmu_cal_id, &gpu_min);
+	if (ret)
+		return ret;
+	if (gpu_max != entries[0].clock ||
+	    gpu_min != entries[count - 1U].clock)
+		return -ERANGE;
+	ret = shark_soc_get_gpu_thermal_table(thermal,
+		ARRAY_SIZE(thermal), &thermal_count);
+	if (ret || thermal_count != ARRAY_SIZE(thermal))
+		return ret ? ret : -EINVAL;
+	ret = shark_soc_get_domain_max_freq("dvfs_mif",
+		SHARK_SOC_DOMAIN_ID_ANY, &mif_max);
+	if (ret)
+		return ret;
+
+	platform->interactive.highspeed_clock = gpu_max;
+	platform->gpu_dvfs_start_clock = gpu_min;
+	platform->gpu_max_clock = gpu_max;
+	platform->gpu_max_clock_limit = gpu_max;
+	platform->gpu_min_clock = gpu_min;
+	platform->gpu_dvfs_config_clock = gpu_min;
+	for (i = 0; i < thermal_count; i++)
+		platform->tmu_lock_clk[i] = thermal[i];
+	platform->pmqos_mif_max_clock = mif_max;
+	platform->pmqos_mif_max_clock_base = 0;
+	platform->cl_dvfs_start_base = gpu_min;
+	platform->mo_min_clock = gpu_min;
+	platform->boost_gpu_min_lock = 0;
+	platform->boost_egl_min_lock = 0;
+#ifdef CONFIG_MALI_VK_BOOST
+	platform->gpu_vk_boost_max_clk_lock = 0;
+	platform->gpu_vk_boost_mif_min_clk_lock = mif_max;
+#endif
+	*table_count = count;
+	return 0;
 }
 #endif
 #endif
@@ -256,9 +302,17 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 {
 #ifdef CONFIG_MALI_DVFS
 	int i;
+#if !defined(CONFIG_SHARK_CUSTOM_DVFS) || defined(CONFIG_MALI_SUSTAINABLE_OPT)
 	int of_data_int_array[OF_DATA_NUM_MAX];
+#endif
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	int of_data_int;
+#endif
 	const char *of_string;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int shark_table_count;
+	int ret;
+#endif
 #endif
 	struct device_node *np = kbdev->dev->of_node;
 	struct exynos_context *platform = (struct exynos_context *) kbdev->platform_context;
@@ -272,10 +326,19 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	gpu_update_config_data_string(np, "governor", &of_string);
 	if (!strncmp("interactive", of_string, strlen("interactive"))) {
 		platform->governor_type = G3D_DVFS_GOVERNOR_INTERACTIVE;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		if (of_property_read_u32_index(np, "interactive_info", 1,
+					       &platform->interactive.highspeed_load))
+			platform->interactive.highspeed_load = 100;
+		if (of_property_read_u32_index(np, "interactive_info", 2,
+					       &platform->interactive.highspeed_delay))
+			platform->interactive.highspeed_delay = 0;
+#else
 		gpu_update_config_data_int_array(np, "interactive_info", of_data_int_array, 3);
 		platform->interactive.highspeed_clock = of_data_int_array[0] == 0 ? 500 : (u32) of_data_int_array[0];
 		platform->interactive.highspeed_load  = of_data_int_array[1] == 0 ? 100 : (u32) of_data_int_array[1];
 		platform->interactive.highspeed_delay = of_data_int_array[2] == 0 ? 0 : (u32) of_data_int_array[2];
+#endif
 	} else if (!strncmp("static", of_string, strlen("static"))) {
 		platform->governor_type = G3D_DVFS_GOVERNOR_STATIC;
 	} else if (!strncmp("booster", of_string, strlen("booster"))) {
@@ -285,45 +348,51 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	} else {
 		platform->governor_type = G3D_DVFS_GOVERNOR_DEFAULT;
 	}
-
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = gpu_apply_shark_frequency_policy(platform, &shark_table_count);
+	if (ret) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"Shark DVFS: G3D policy is unavailable (%d)\n", ret);
+		return ret;
+	}
+#else
 #ifdef CONFIG_CAL_IF
 	platform->gpu_dvfs_start_clock = cal_dfs_get_boot_freq(platform->g3d_cmu_cal_id);
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	platform->gpu_dvfs_start_clock = gpu_shark_rate(
-		platform->gpu_dvfs_start_clock);
-#endif
 	GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "get g3d start clock from ect : %d\n", platform->gpu_dvfs_start_clock);
 #else
 	gpu_update_config_data_int(np, "gpu_dvfs_start_clock", &platform->gpu_dvfs_start_clock);
 #endif
 	gpu_update_config_data_int_array(np, "gpu_dvfs_table_size", of_data_int_array, 2);
+#endif
 	for (i = 0; i < G3D_MAX_GOVERNOR_NUM; i++) {
 		gpu_dvfs_update_start_clk(i, platform->gpu_dvfs_start_clock);
 		gpu_dvfs_update_table(i, gpu_dvfs_table_default);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		gpu_dvfs_update_table_size(i, shark_table_count);
+#else
 		gpu_dvfs_update_table_size(i, of_data_int_array[0]);
+#endif
 	}
 
 	gpu_update_config_data_int(np, "gpu_pmqos_cpu_cluster_num", &platform->gpu_pmqos_cpu_cluster_num);
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	gpu_update_config_data_int(np, "gpu_max_clock", &platform->gpu_max_clock);
 	gpu_update_config_data_int(np, "gpu_max_clock_limit", &platform->gpu_max_clock_limit);
 	gpu_update_config_data_int(np, "gpu_min_clock", &platform->gpu_min_clock);
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	platform->gpu_max_clock = gpu_shark_rate(platform->gpu_max_clock);
-	platform->gpu_max_clock_limit = gpu_shark_rate(
-		platform->gpu_max_clock_limit);
-	platform->gpu_min_clock = gpu_shark_rate(platform->gpu_min_clock);
-#endif
 	gpu_update_config_data_int(np, "gpu_dvfs_bl_config_clock", &platform->gpu_dvfs_config_clock);
+#endif
 	gpu_update_config_data_int(np, "gpu_default_voltage", &platform->gpu_default_vol);
 	gpu_update_config_data_int(np, "gpu_cold_minimum_vol", &platform->cold_min_vol);
 	gpu_update_config_data_int(np, "gpu_voltage_offset_margin", &platform->gpu_default_vol_margin);
 	gpu_update_config_data_bool(np, "gpu_tmu_control", &platform->tmu_status);
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	gpu_update_config_data_int(np, "gpu_temp_throttling_level_num", &of_data_int);
 	if (of_data_int == TMU_LOCK_CLK_END)
 		gpu_update_config_data_int_array(np, "gpu_temp_throttling", platform->tmu_lock_clk, TMU_LOCK_CLK_END);
 	else
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "mismatch tmu lock table size: %d, %d\n",
 				of_data_int, TMU_LOCK_CLK_END);
+#endif
 #ifdef CONFIG_CPU_THERMAL_IPA
 	gpu_update_config_data_int(np, "gpu_power_coeff", &platform->ipa_power_coeff_gpu);
 	gpu_update_config_data_int(np, "gpu_dvfs_time_interval", &platform->gpu_dvfs_time_interval);
@@ -332,9 +401,11 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	gpu_update_config_data_bool(np, "gpu_dynamic_abb", &platform->dynamic_abb_status);
 	gpu_update_config_data_int(np, "gpu_dvfs_polling_time", &platform->polling_speed);
 	gpu_update_config_data_bool(np, "gpu_pmqos_int_disable", &platform->pmqos_int_disable);
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	gpu_update_config_data_int(np, "gpu_pmqos_mif_max_clock", &platform->pmqos_mif_max_clock);
 	gpu_update_config_data_int(np, "gpu_pmqos_mif_max_clock_base", &platform->pmqos_mif_max_clock_base);
 	gpu_update_config_data_int(np, "gpu_cl_dvfs_start_base", &platform->cl_dvfs_start_base);
+#endif
 #endif /* CONFIG_MALI_DVFS */
 	gpu_update_config_data_bool(np, "gpu_early_clk_gating", &platform->early_clk_gating_status);
 #ifdef CONFIG_MALI_RT_PM
@@ -345,6 +416,7 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	platform->inter_frame_pm_feature = 0;
 #endif
 	gpu_update_config_data_int(np, "gpu_runtime_pm_delay_time", &platform->runtime_pm_delay_time);
+#ifndef CONFIG_SHARK_CUSTOM_DVFS
 	gpu_update_config_data_int(np, "gpu_mo_min_clock", &platform->mo_min_clock);
 
 	gpu_update_config_data_int(np, "gpu_boost_gpu_min_lock", &platform->boost_gpu_min_lock);
@@ -352,6 +424,7 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_VK_BOOST
 	gpu_update_config_data_int(np, "gpu_vk_boost_max_lock", &platform->gpu_vk_boost_max_clk_lock);
 	gpu_update_config_data_int(np, "gpu_vk_boost_mif_min_lock", &platform->gpu_vk_boost_mif_min_clk_lock);
+#endif
 #endif
 
 #ifdef CONFIG_MALI_SUSTAINABLE_OPT
@@ -379,23 +452,66 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 {
 	struct exynos_context *platform = kbdev->platform_context;
 	gpu_dvfs_info *dvfs_table;
-	struct dvfs_rate_volt g3d_rate_volt[48];
 	int cal_get_dvfs_lv_num;
-	int cal_table_size;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_gpu_dvfs_entry policy[DVFS_TABLE_ROW_MAX];
+	unsigned int shark_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_volts[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int policy_count = 0;
+	unsigned int shark_count = 0;
+	int ret;
+	int i;
+#else
+	struct dvfs_rate_volt g3d_rate_volt[48];
 	int of_data_int_array[OF_DATA_NUM_MAX];
+	int cal_table_size;
 	int dvfs_table_row_num = 0, dvfs_table_col_num = 0;
 	int dvfs_table_size = 0;
 	int table_idx;
 	struct device_node *np;
 	int i, j, cal_freq, cal_vol;
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	unsigned int shark_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
-	unsigned int shark_volts[SHARK_SOC_MAX_DOMAIN_OPPS];
-	unsigned int shark_count = 0;
-	bool shark_table = false;
-	int ret;
 #endif
 
+	dvfs_table = gpu_dvfs_table_default;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_domain_table("dvfs_g3d",
+		platform->g3d_cmu_cal_id, shark_rates, shark_volts,
+		ARRAY_SIZE(shark_rates), &shark_count);
+	if (ret)
+		return ret;
+	ret = shark_soc_get_gpu_dvfs_table(policy, ARRAY_SIZE(policy),
+		&policy_count);
+	if (ret)
+		return ret;
+	if (!shark_count || shark_count != policy_count ||
+	    shark_count > DVFS_TABLE_ROW_MAX ||
+	    platform->gpu_pmqos_cpu_cluster_num != 2)
+		return -EINVAL;
+
+	cal_get_dvfs_lv_num = cal_dfs_get_lv_num(platform->g3d_cmu_cal_id);
+	if (cal_get_dvfs_lv_num != shark_count)
+		return -EINVAL;
+	for (i = 0; i < shark_count; i++) {
+		if (!shark_rates[i] || !shark_volts[i] ||
+		    policy[i].clock != shark_rates[i] ||
+		    (i && shark_rates[i] >= shark_rates[i - 1]))
+			return -ERANGE;
+
+		dvfs_table[i].clock = policy[i].clock;
+		dvfs_table[i].voltage = shark_volts[i];
+		dvfs_table[i].min_threshold = policy[i].min_threshold;
+		dvfs_table[i].max_threshold = policy[i].max_threshold;
+		dvfs_table[i].down_staycount = policy[i].down_staycount;
+		dvfs_table[i].mem_freq = policy[i].mif_freq;
+		dvfs_table[i].cpu_little_min_freq =
+			policy[i].cpu_little_min_freq;
+		dvfs_table[i].cpu_big_max_freq = policy[i].cpu_big_max_freq ?
+			policy[i].cpu_big_max_freq : CPU_MAX;
+		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+			"G3D %7uKhz Shark ASV is %uuV\n",
+			shark_rates[i], shark_volts[i]);
+	}
+#else
 	np = kbdev->dev->of_node;
 	gpu_update_config_data_int_array(np, "gpu_dvfs_table_size", of_data_int_array, 2);
 
@@ -407,34 +523,9 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "dvfs_table size is not enough\n");
 		return -1;
 	}
-	dvfs_table = gpu_dvfs_table_default;
-
 	cal_get_dvfs_lv_num = cal_dfs_get_lv_num(platform->g3d_cmu_cal_id);
-#ifdef CONFIG_SHARK_CUSTOM_DVFS
-	ret = shark_soc_get_domain_table("dvfs_g3d",
-					 platform->g3d_cmu_cal_id, shark_rates,
-					 shark_volts, ARRAY_SIZE(shark_rates),
-					 &shark_count);
-	if (!ret && shark_count == cal_get_dvfs_lv_num &&
-	    shark_count <= ARRAY_SIZE(g3d_rate_volt)) {
-		for (i = 0; i < shark_count; i++) {
-			if (!shark_rates[i] || !shark_volts[i] ||
-			    (i && shark_rates[i] >= shark_rates[i - 1]))
-				break;
-		}
-		if (i == shark_count) {
-			for (i = 0; i < shark_count; i++) {
-				g3d_rate_volt[i].rate = shark_rates[i];
-				g3d_rate_volt[i].volt = shark_volts[i];
-			}
-			cal_table_size = shark_count;
-			shark_table = true;
-		}
-	}
-	if (!shark_table)
-#endif
-		cal_table_size = cal_dfs_get_rate_asv_table(
-			platform->g3d_cmu_cal_id, g3d_rate_volt);
+	cal_table_size = cal_dfs_get_rate_asv_table(
+		platform->g3d_cmu_cal_id, g3d_rate_volt);
 	if (!cal_table_size || cal_table_size != cal_get_dvfs_lv_num) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
 			"Invalid G3D CAL/Shark ASV table (%d/%d)\n",
@@ -481,6 +572,7 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 			}
 		}
 	}
+#endif
 	return 0;
 }
 #endif
@@ -489,6 +581,7 @@ static int gpu_context_init(struct kbase_device *kbdev)
 {
 	struct exynos_context *platform;
 	struct mali_base_gpu_core_props *core_props;
+	int ret;
 
 	platform = kmalloc(sizeof(struct exynos_context), GFP_KERNEL);
 
@@ -513,9 +606,13 @@ static int gpu_context_init(struct kbase_device *kbdev)
 	platform->ctx_vk_need_qos = false;
 #endif
 
-	gpu_dvfs_update_config_data_from_dt(kbdev);
+	ret = gpu_dvfs_update_config_data_from_dt(kbdev);
+	if (ret)
+		goto init_fail;
 #ifdef CONFIG_MALI_DVFS
-	gpu_dvfs_update_asv_table(kbdev);
+	ret = gpu_dvfs_update_asv_table(kbdev);
+	if (ret)
+		goto init_fail;
 #endif
 
 	core_props = &(kbdev->gpu_props.props.core_props);
@@ -526,8 +623,9 @@ static int gpu_context_init(struct kbase_device *kbdev)
 #endif
 
 #ifdef CONFIG_MALI_EXYNOS_TRACE
-	if (gpu_trace_init(kbdev) != 0)
-		return -1;
+	ret = gpu_trace_init(kbdev);
+	if (ret)
+		goto init_fail;
 #endif
 
 #ifdef CONFIG_MALI_ASV_CALIBRATION_SUPPORT
@@ -537,6 +635,12 @@ static int gpu_context_init(struct kbase_device *kbdev)
 	platform->inter_frame_pm_status = platform->inter_frame_pm_feature;
 
 	return 0;
+
+init_fail:
+	kbdev->platform_context = NULL;
+	pkbdev = NULL;
+	kfree(platform);
+	return ret;
 }
 
 #ifdef CONFIG_MALI_GPU_CORE_MASK_SELECTION

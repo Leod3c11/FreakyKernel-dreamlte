@@ -21,6 +21,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/exynos_iovmm.h>
 #include <linux/smc.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include <media/v4l2-ioctl.h>
 #include <media/m2m1shot.h>
@@ -3643,6 +3646,27 @@ static int sc_probe(struct platform_device *pdev)
 	}
 
 #if defined(CONFIG_PM_DEVFREQ)
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[1];
+		unsigned int shark_count = 0;
+
+		ret = shark_soc_get_client_qos_table("scaler-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(shark_qos)) {
+			if (!ret)
+				ret = -EINVAL;
+			goto err_m2m;
+		}
+		sc->qosreq_int_level = shark_qos[0];
+	}
+	if (sc->qosreq_int_level > 0) {
+		pm_qos_add_request(&sc->qosreq_int,
+			PM_QOS_DEVICE_THROUGHPUT, 0);
+		dev_info(&pdev->dev, "INT Min.Lock Freq. = %u\n",
+			sc->qosreq_int_level);
+	}
+#else
 	if (!of_property_read_u32(pdev->dev.of_node, "mscl,int_qos_minlock",
 				(u32 *)&sc->qosreq_int_level)) {
 		if (sc->qosreq_int_level > 0) {
@@ -3652,6 +3676,7 @@ static int sc_probe(struct platform_device *pdev)
 						sc->qosreq_int_level);
 		}
 	}
+#endif
 #endif
 	if (of_property_read_u32(pdev->dev.of_node, "mscl,cfw",
 				(u32 *)&sc->cfw))

@@ -26,6 +26,9 @@
 #include <linux/ion.h>
 #include <linux/exynos_ion.h>
 #include <soc/samsung/bts.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "g2d1shot.h"
 #include "g2d1shot_helper.h"
@@ -1294,22 +1297,43 @@ static int g2d_populate_dt(struct g2d1shot_dev *g2d_dev)
 	struct skia_qos_data *data;
 	struct skia_qos_entry *table;
 	int size, i;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_g2d_qos_frequency shark_table[6];
+	unsigned int shark_count = 0;
+	int ret;
+#endif
 
 	data = devm_kzalloc(dev, sizeof(struct skia_qos_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_g2d_qos_table(shark_table,
+		ARRAY_SIZE(shark_table), &shark_count);
+	if (ret)
+		return ret;
+	size = shark_count * 3U;
+#else
 	size = of_property_count_u32_elems(dev->of_node, "skia_qos_table");
 	if (size < 0)
 		return size;
+#endif
 
 	table = devm_kzalloc(dev,
 		sizeof(struct skia_qos_entry) * size / 3, GFP_KERNEL);
 	if (!table)
 		return -ENOMEM;
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	for (i = 0; i < shark_count; i++) {
+		table[i].c0_freq = shark_table[i].cpucl0_freq;
+		table[i].c1_freq = shark_table[i].cpucl1_freq;
+		table[i].mif_freq = shark_table[i].mif_freq;
+	}
+#else
 	of_property_read_u32_array(dev->of_node, "skia_qos_table",
 					(unsigned int *)table, size);
+#endif
 
 	of_property_read_u32_array(dev->of_node, "hw_ppc",
 					(unsigned int *)g2d_dev->hw_ppc, PPC_ATTR_END);

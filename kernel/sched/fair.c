@@ -32,6 +32,9 @@
 #include <linux/task_work.h>
 #include <linux/of.h>
 #include <linux/cpuset.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include <trace/events/sched.h>
 #ifdef CONFIG_HMP_VARIABLE_SCALE
@@ -11354,6 +11357,11 @@ static int __init hmp_tbsoftlanding_init(void)
 {
 	struct device_node *hmp_param_node;
 	int lv;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int shark_rates[3];
+	unsigned int shark_count = 0;
+	int ret;
+#endif
 
 	hmp_tbsoftlanding.enabled = 0;
 
@@ -11367,6 +11375,17 @@ static int __init hmp_tbsoftlanding_init(void)
 					&hmp_tbsoftlanding.timeout))
 		pr_warn("%s missing hmp tbsoftlanding_timeout property\n",__func__);
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_hmp_softlanding_frequencies(shark_rates,
+		ARRAY_SIZE(shark_rates), &shark_count);
+	if (ret || shark_count != TBSL_LV_END) {
+		pr_err("HMP: Shark softlanding frequencies unavailable (%d, %u)\n",
+		       ret, shark_count);
+		return ret ? ret : -EINVAL;
+	}
+	for (lv = 0; lv < TBSL_LV_END; lv++)
+		hmp_tbsoftlanding.data[lv].freq = shark_rates[lv];
+#else
 	if (of_property_read_u32(hmp_param_node, "down_compensation_high_freq",
 					&hmp_tbsoftlanding.data[TBSL_LV_HIGH].freq))
 		pr_warn("%s missing hmp tbsoftlanding_high_freq property\n",__func__);
@@ -11378,6 +11397,7 @@ static int __init hmp_tbsoftlanding_init(void)
 	if (of_property_read_u32(hmp_param_node, "down_compensation_low_freq",
 					&hmp_tbsoftlanding.data[TBSL_LV_LOW].freq))
 		pr_warn("%s missing hmp tbsoftlanding_low_freq property\n",__func__);
+#endif
 
 	/*
 	 * calculate threshold. base threshold is half of down threshold
@@ -11412,5 +11432,4 @@ static int __init hmp_tbsoftlanding_init(void)
 }
 late_initcall(hmp_tbsoftlanding_init);
 #endif	/* CONFIG_SCHED_HMP_TASK_BASED_SOFTLANDING */
-
 

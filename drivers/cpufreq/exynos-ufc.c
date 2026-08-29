@@ -19,6 +19,9 @@
 #include <linux/pm_opp.h>
 
 #include <soc/samsung/exynos-cpu_hotplug.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include "exynos-acme.h"
 
@@ -573,10 +576,20 @@ static __init void init_sysfs(void)
 static int parse_ufc_ctrl_info(struct exynos_cpufreq_domain *domain,
 					struct device_node *dn)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	struct shark_soc_cpu_policy policy;
+	int ret;
+
+	ret = shark_soc_get_cpu_policy(NULL, domain->cal_id, &policy);
+	if (ret)
+		return ret;
+	domain->user_default_qos = policy.user_default_qos;
+#else
 	unsigned int val;
 
 	if (!of_property_read_u32(dn, "user-default-qos", &val))
 		domain->user_default_qos = val;
+#endif
 
 	return 0;
 }
@@ -629,7 +642,7 @@ int ufc_domain_init(struct exynos_cpufreq_domain *domain)
 	return 0;
 }
 
-static int __init init_ufc_table_dt(struct exynos_cpufreq_domain *domain,
+static int __init init_ufc_table_policy(struct exynos_cpufreq_domain *domain,
 					struct device_node *dn)
 {
 	struct device_node *child;
@@ -652,17 +665,45 @@ static int __init init_ufc_table_dt(struct exynos_cpufreq_domain *domain,
 		if (of_property_read_u32(child, "execution-mode", &ufc->info.exe_mode))
 			continue;
 
-		size = of_property_count_u32_elems(child, "table");
-		if (size < 0)
-			return size;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		{
+			unsigned int master[SHARK_SOC_MAX_DOMAIN_OPPS];
+			unsigned int limit[SHARK_SOC_MAX_DOMAIN_OPPS];
+			unsigned int count = 0;
 
-		table = kzalloc(sizeof(struct exynos_ufc_freq) * size / 2, GFP_KERNEL);
-		if (!table)
-			return -ENOMEM;
+			ret = shark_soc_get_ufc_table(ufc->info.ctrl_type,
+				ufc->info.exe_mode, master, limit,
+				ARRAY_SIZE(master), &count);
+			if (ret)
+				return ret;
+			table = kzalloc(sizeof(*table) * count, GFP_KERNEL);
+			if (!table)
+				return -ENOMEM;
+			size = count;
+			for (c_index = 0; c_index < size; c_index++) {
+				table[c_index].master_freq = master[c_index];
+				table[c_index].limit_freq = limit[c_index];
+			}
+		}
+#else
+		{
+			int cells;
 
-		ret = of_property_read_u32_array(child, "table", (unsigned int *)table, size);
-		if (ret)
-			return -EINVAL;
+			cells = of_property_count_u32_elems(child, "table");
+			if (cells < 0)
+				return cells;
+			table = kzalloc(sizeof(*table) * cells / 2, GFP_KERNEL);
+			if (!table)
+				return -ENOMEM;
+			ret = of_property_read_u32_array(child, "table",
+				(unsigned int *)table, cells);
+			if (ret) {
+				kfree(table);
+				return -EINVAL;
+			}
+			size = cells / 2;
+		}
+#endif
 
 		pr_info("Register UFC Type-%d Execution Mode-%d for Domain %d\n",
 				ufc->info.ctrl_type, ufc->info.exe_mode, domain->id);
@@ -673,7 +714,7 @@ static int __init init_ufc_table_dt(struct exynos_cpufreq_domain *domain,
 			if (freq == CPUFREQ_ENTRY_INVALID)
 				continue;
 
-			for (c_index = 0; c_index < size / 2; c_index++) {
+			for (c_index = 0; c_index < size; c_index++) {
 				if (freq <= table[c_index].master_freq)
 					ufc->info.freq_table[index].limit_freq = table[c_index].limit_freq;
 
@@ -724,7 +765,7 @@ static int __init exynos_ufc_init(void)
 		}
 
 		/* Parse user frequency ctrl table info from dt */
-		ret = init_ufc_table_dt(domain, dn);
+		ret = init_ufc_table_policy(domain, dn);
 		if (ret) {
 			pr_err("failed to parse frequency table for ufc ctrl\n");
 			goto exit;

@@ -5,7 +5,7 @@
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-pmu.h>
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-#include <soc/samsung/exynos-soc-interface.h>
+#include <soc/samsung/exynos-soc_interface.h>
 #endif
 
 #include "cmucal.h"

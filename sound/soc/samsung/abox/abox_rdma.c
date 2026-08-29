@@ -29,6 +29,9 @@
 
 #include "../../../../drivers/iommu/exynos-iommu.h"
 #include <sound/samsung/abox.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 #include "abox_util.h"
 #include "abox_gic.h"
 #include "abox.h"
@@ -1680,6 +1683,27 @@ static int samsung_abox_rdma_probe(struct platform_device *pdev)
 
 	data->quirks = abox_probe_quirks(np);
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[RATE_COUNT];
+		unsigned int shark_count = 0;
+		unsigned int i;
+
+		result = shark_soc_get_client_qos_table("abox-rdma-lit",
+			shark_qos, ARRAY_SIZE(shark_qos), &shark_count);
+		if (result || shark_count != ARRAY_SIZE(data->pm_qos_lit))
+			return result ? result : -EINVAL;
+		for (i = 0; i < shark_count; i++)
+			data->pm_qos_lit[i] = shark_qos[i];
+
+		result = shark_soc_get_client_qos_table("abox-rdma-big",
+			shark_qos, ARRAY_SIZE(shark_qos), &shark_count);
+		if (result || shark_count != ARRAY_SIZE(data->pm_qos_big))
+			return result ? result : -EINVAL;
+		for (i = 0; i < shark_count; i++)
+			data->pm_qos_big[i] = shark_qos[i];
+	}
+#else
 	result = of_property_read_u32_array(np, "pm_qos_lit", data->pm_qos_lit,
 			ARRAY_SIZE(data->pm_qos_lit));
 	if (IS_ERR_VALUE(result))
@@ -1689,6 +1713,7 @@ static int samsung_abox_rdma_probe(struct platform_device *pdev)
 			ARRAY_SIZE(data->pm_qos_big));
 	if (IS_ERR_VALUE(result))
 		dev_dbg(dev, "Failed to read %s: %d\n", "pm_qos_big", result);
+#endif
 
 	result = of_property_read_u32_array(np, "pm_qos_hmp", data->pm_qos_hmp,
 			ARRAY_SIZE(data->pm_qos_hmp));

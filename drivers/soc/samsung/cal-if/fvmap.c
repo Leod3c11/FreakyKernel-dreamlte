@@ -6,7 +6,7 @@
 #include <linux/uaccess.h>
 #include <soc/samsung/cal-if.h>
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-#include <soc/samsung/exynos-soc-interface.h>
+#include <soc/samsung/exynos-soc_interface.h>
 #endif
 
 #include "fvmap.h"
@@ -249,8 +249,11 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 			if (shark_ret > 0)
 				shark_override = true;
 			else if (shark_ret < 0)
-				pr_warn("Shark DVFS: keeping live FVMap for %s (%d)\n",
+				pr_err("Shark DVFS: rejected FVMap for %s (%d); authority unavailable\n",
 					vclk->name, shark_ret);
+		} else {
+			pr_err("Shark DVFS: FVMap for %s has too many levels (%u)\n",
+			       vclk->name, shark_count);
 		}
 #endif
 		if (init_margin_table[i])
@@ -265,7 +268,7 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 			}
 #endif
 
-			/* Fallback when Shark rejects an incompatible FVMap. */
+			/* Keep voltage floors valid for the firmware's live safety map. */
 			if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
 				if ((old->table[j].rate == 1898000) && (old->table[j].volt < 1200000))
 					old->table[j].volt = 1200000;

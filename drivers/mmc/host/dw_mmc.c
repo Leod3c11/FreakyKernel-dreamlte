@@ -43,6 +43,9 @@
 
 #include <soc/samsung/exynos-pm.h>
 #include <soc/samsung/exynos-powermode.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc_interface.h>
+#endif
 
 #include <crypto/fmp.h>
 
@@ -3999,10 +4002,24 @@ static struct dw_mci_board *dw_mci_parse_dt(struct dw_mci *host)
 			 "fifo-depth property not found, using value of FIFOTH register as default\n");
 
 	of_property_read_u32(np, "card-detect-delay", &pdata->detect_delay_ms);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int shark_qos[1];
+		unsigned int shark_count = 0;
+
+		ret = shark_soc_get_client_qos_table("dwmmc-int", shark_qos,
+			ARRAY_SIZE(shark_qos), &shark_count);
+		if (ret || shark_count != ARRAY_SIZE(shark_qos))
+			return ERR_PTR(ret ? ret : -EINVAL);
+		pdata->qos_int_level = shark_qos[0];
+		host->qos_cntrl = true;
+	}
+#else
 	if (of_property_read_u32(np, "qos-int-level", &pdata->qos_int_level))
 		host->qos_cntrl = false;
 	else
 		host->qos_cntrl = true;
+#endif
 	of_property_read_u32(np, "data-timeout", &pdata->data_timeout);
 	of_property_read_u32(np, "hto-timeout", &pdata->hto_timeout);
 	of_property_read_u32(np, "desc-size", &pdata->desc_sz);
