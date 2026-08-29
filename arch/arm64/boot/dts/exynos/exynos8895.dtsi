@@ -502,7 +502,7 @@
 			/* PM QoS Class ID*/
 			pm_qos-min-class = <3>;
 			pm_qos-max-class = <4>;
-			pm_qos-booting = <1690000>;
+			pm_qos-booting = <2002000>;
 
 			user-default-qos = <832000>;
 
@@ -548,7 +548,7 @@
 			pm_qos-min-class = <5>;
 			pm_qos-max-class = <6>;
 			pm_qos-jigbooting = <1469000>;
-			pm_qos-booting = <2314000>;
+			pm_qos-booting = <2808000>;
 
 			user-default-qos = <858000>;
 
