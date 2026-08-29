@@ -2,6 +2,9 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <soc/samsung/ect_parser.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 
 #include "cmucal.h"
 #include "vclk.h"
@@ -11,6 +14,91 @@
 
 #define ECT_DUMMY_SFR	(0xFFFFFFFF)
 unsigned int asv_table_ver = 0;
+
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+static bool vclk_shark_rate_present(const unsigned int *rates,
+				    unsigned int count,
+				    unsigned int rate)
+{
+	unsigned int i;
+
+	if (!rate || rate == ~0U)
+		return true;
+
+	for (i = 0; i < count; i++)
+		if (rates[i] == rate)
+			return true;
+
+	return false;
+}
+
+static void vclk_apply_shark_rates(struct vclk *vclk)
+{
+	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	unsigned int i;
+	int ret;
+
+	if (!vclk || !vclk->name || !vclk->lut || !vclk->num_rates ||
+	    vclk->num_rates > ARRAY_SIZE(rates))
+		return;
+
+	ret = shark_soc_get_domain_rate_table(vclk->name,
+					      SHARK_SOC_DOMAIN_ID_ANY, rates,
+					      ARRAY_SIZE(rates), &count);
+	if (ret == -ENOENT || ret == -ENODEV)
+		return;
+	if (ret || count != vclk->num_rates) {
+		pr_warn("Shark DVFS: rejected VCLK shape for %s (%d, %u/%u)\n",
+			vclk->name, ret, count, vclk->num_rates);
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (!rates[i] || (i && rates[i] >= rates[i - 1])) {
+			pr_warn("Shark DVFS: rejected unordered VCLK table for %s\n",
+				vclk->name);
+			return;
+		}
+	}
+	if (!vclk_shark_rate_present(rates, count, vclk->boot_freq) ||
+	    !vclk_shark_rate_present(rates, count, vclk->resume_freq)) {
+		pr_warn("Shark DVFS: VCLK anchors are incompatible for %s\n",
+			vclk->name);
+		return;
+	}
+
+	for (i = 0; i < count; i++)
+		vclk->lut[i].rate = rates[i];
+
+	pr_info("Shark DVFS: VCLK authority bound for %s (%u levels)\n",
+		vclk->name, count);
+}
+
+static void vclk_bind_shark_policy(struct vclk *vclk)
+{
+	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int i;
+	int ret;
+
+	if (!vclk || !vclk->name || !vclk->lut || !vclk->num_rates ||
+	    vclk->num_rates > ARRAY_SIZE(rates))
+		return;
+
+	for (i = 0; i < vclk->num_rates; i++)
+		rates[i] = vclk->lut[i].rate;
+	ret = shark_soc_bind_clock_domain(vclk->name, vclk->id,
+					  vclk->num_rates, rates,
+					  vclk->max_freq, vclk->min_freq,
+					  vclk->boot_freq, vclk->resume_freq);
+	if (ret && ret != -ENOENT && ret != -ENODEV)
+		pr_warn("Shark DVFS: rejected VCLK policy for %s (%d)\n",
+			vclk->name, ret);
+}
+#else
+static inline void vclk_apply_shark_rates(struct vclk *vclk) { }
+static inline void vclk_bind_shark_policy(struct vclk *vclk) { }
+#endif
 
 static struct vclk_lut *get_lut(struct vclk *vclk, unsigned int rate)
 {
@@ -489,6 +577,8 @@ static int vclk_get_dfs_info(struct vclk *vclk)
 	else
 		vclk->resume_freq = 0;
 
+	vclk_apply_shark_rates(vclk);
+
 	return ret;
 err_nomem2:
 	kfree(vclk->lut);
@@ -616,6 +706,7 @@ static void vclk_bind(void)
 			if (ret)
 				pr_err("ECT ASV [%s] not found %d\n",
 					vclk->name, ret);
+			vclk_bind_shark_policy(vclk);
 		}
 	}
 }

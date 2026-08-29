@@ -2,6 +2,9 @@
 #include <linux/exynos-ss.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 
 #include "pwrcal-env.h"
 #include "pwrcal-rae.h"
@@ -16,6 +19,66 @@
 #include "pmucal_cpu.h"
 #include "pmucal_rae.h"
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+static int cal_shark_get_domain(unsigned int id, struct vclk **out_vclk,
+				unsigned int *rates, unsigned int *count)
+{
+	unsigned int shark_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_count = 0;
+	struct vclk *vclk;
+	unsigned int i;
+	int ret;
+
+	if (!IS_ACPM_VCLK(id))
+		return -ENOENT;
+	vclk = cmucal_get_node(id);
+	if (!vclk || !vclk->name || !vclk->lut)
+		return -ENOENT;
+
+	ret = shark_soc_get_domain_rate_table(vclk->name, id, shark_rates,
+					      ARRAY_SIZE(shark_rates),
+					      &shark_count);
+	if (ret)
+		return ret;
+	if (!shark_count || shark_count != vclk->num_rates)
+		return -EINVAL;
+	for (i = 0; i < shark_count; i++) {
+		if (!shark_rates[i] ||
+		    (i && shark_rates[i] >= shark_rates[i - 1]) ||
+		    shark_rates[i] != vclk->lut[i].rate)
+			return -EINVAL;
+		if (rates)
+			rates[i] = shark_rates[i];
+	}
+
+	if (out_vclk)
+		*out_vclk = vclk;
+	if (count)
+		*count = shark_count;
+	return 0;
+}
+
+typedef int (*cal_shark_policy_getter_t)(const char *, unsigned int,
+					 unsigned int *);
+
+static unsigned long cal_shark_get_policy(unsigned int id,
+					  cal_shark_policy_getter_t getter,
+					  unsigned long fallback)
+{
+	struct vclk *vclk;
+	unsigned int rate;
+	int ret;
+
+	ret = cal_shark_get_domain(id, &vclk, NULL, NULL);
+	if (ret)
+		return fallback;
+	ret = getter(vclk->name, id, &rate);
+	if (ret)
+		return fallback;
+	return rate;
+}
+#endif
+
 unsigned int cal_clk_is_enabled(unsigned int id)
 {
 	return 0;
@@ -23,16 +86,32 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	return cal_shark_get_policy(id, shark_soc_get_domain_max_freq,
+		vclk_get_max_freq(id));
+#else
 	return vclk_get_max_freq(id);
+#endif
 }
 
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	return cal_shark_get_policy(id, shark_soc_get_domain_min_freq,
+		vclk_get_min_freq(id));
+#else
 	return vclk_get_min_freq(id);
+#endif
 }
 
 unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int count;
+
+	if (!cal_shark_get_domain(id, NULL, NULL, &count))
+		return count;
+#endif
 	return vclk_get_lv_num(id);
 }
 
@@ -47,6 +126,17 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 	int ret;
 
 	if (IS_ACPM_VCLK(id)) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		unsigned int resolved;
+
+		if (!cal_shark_get_domain(id, &vclk, NULL, NULL) &&
+		    !shark_soc_resolve_rate(vclk->name, id, rate, &resolved)) {
+			if (rate != resolved)
+				pr_debug("Shark DVFS: %s request %lu -> %u kHz\n",
+					 vclk->name, rate, resolved);
+			rate = resolved;
+		}
+#endif
 		ret = exynos_acpm_set_rate(GET_IDX(id), rate);
 		if (!ret) {
 			vclk = cmucal_get_node(id);
@@ -100,6 +190,20 @@ int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 {
 	int ret;
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	{
+		unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+		unsigned int count;
+		unsigned int i;
+
+		ret = cal_shark_get_domain(id, NULL, rates, &count);
+		if (!ret) {
+			for (i = 0; i < count; i++)
+				table[i] = rates[i];
+			return count;
+		}
+	}
+#endif
 	ret = vclk_get_rate_table(id, table);
 
 	return ret;
@@ -152,12 +256,22 @@ int cal_qch_init(unsigned int id, unsigned int use_qch)
 
 unsigned int cal_dfs_get_boot_freq(unsigned int id)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	return cal_shark_get_policy(id, shark_soc_get_domain_boot_freq,
+		vclk_get_boot_freq(id));
+#else
 	return vclk_get_boot_freq(id);
+#endif
 }
 
 unsigned int cal_dfs_get_resume_freq(unsigned int id)
 {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	return cal_shark_get_policy(id, shark_soc_get_domain_resume_freq,
+		vclk_get_resume_freq(id));
+#else
 	return vclk_get_resume_freq(id);
+#endif
 }
 
 int cal_pd_control(unsigned int id, int on)

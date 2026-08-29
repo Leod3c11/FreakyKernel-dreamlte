@@ -1,4 +1,7 @@
 #include <soc/samsung/ect_parser.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 
 #include <asm/uaccess.h>
 #include <asm/map.h>
@@ -2363,6 +2366,9 @@ int ect_parse_binary_header(void)
 	int i, j;
 	char *block_name;
 	void *address;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	void *parsed_block;
+#endif
 	unsigned int length, offset;
 	struct ect_header *ect_header;
 
@@ -2403,6 +2409,13 @@ int ect_parse_binary_header(void)
 				ret = -EINVAL;
 				goto err_parser;
 			}
+
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+			/* CAL consumes ECT as soon as this parser returns. */
+			parsed_block = ect_list[j].block_handle;
+			shark_soc_ect_block_post_parse(ect_list[j].block_name,
+						       parsed_block);
+#endif
 
 			ect_list[j].block_precedence = i;
 		}

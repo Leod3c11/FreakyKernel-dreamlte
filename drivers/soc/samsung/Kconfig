@@ -109,6 +109,17 @@ config ACPM_DVFS
 	help
 	  Support ACPM DVFS for Exynos SoC.
 
+config SHARK_CUSTOM_DVFS
+	bool "Shark custom DVFS authority for Exynos8895"
+	depends on SOC_EXYNOS8895 && ECT && CAL_IF && ACPM_DVFS
+	default y
+	help
+	  Publish the validated Exynos8895 clock, PLL, ASV, timing, thermal
+	  and minlock catalog generated from all_dump, then merge its rate
+	  policy with the live per-chip FVMap voltages. Incompatible ECT or
+	  FVMap shapes are rejected without replacing the firmware tables.
+	  This option is intended for the Galaxy S8 Exynos8895 platform.
+
 config VDD_AUTO_CAL
 	bool "Exynos VDD_AUTO CALIBRATION"
 	depends on ACPM_DVFS

@@ -32,6 +32,9 @@
 #include <soc/samsung/tmu.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-dm.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 #include "../../soc/samsung/acpm/acpm.h"
 #include "../../soc/samsung/acpm/acpm_ipc.h"
 
@@ -790,12 +793,52 @@ struct device *find_exynos_devfreq_device(enum exynos_dm_type dm_type)
 #endif
 
 #ifdef CONFIG_OF
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+static unsigned int exynos_devfreq_shark_rate(const char *name,
+					      unsigned int rate)
+{
+	unsigned int resolved;
+
+	if (!shark_soc_resolve_rate(name, SHARK_SOC_DOMAIN_ID_ANY, rate,
+				    &resolved))
+		return resolved;
+	return rate;
+}
+#endif
+
 #if defined(CONFIG_ECT)
 static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char *dvfs_domain_name)
 {
 	int i;
 	void *dvfs_block;
 	struct ect_dvfs_domain *dvfs_domain;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int count = 0;
+	int ret;
+
+	ret = shark_soc_get_domain_rate_table(dvfs_domain_name,
+					      SHARK_SOC_DOMAIN_ID_ANY, rates,
+					      ARRAY_SIZE(rates), &count);
+	if (!ret && count && count <= ARRAY_SIZE(data->opp_list)) {
+		for (i = 0; i < count; i++) {
+			if (!rates[i] || (i && rates[i] >= rates[i - 1]))
+				break;
+		}
+		if (i == count) {
+			data->max_state = count;
+			for (i = 0; i < count; i++) {
+				data->opp_list[i].idx = i;
+				data->opp_list[i].freq = rates[i];
+				data->opp_list[i].volt = 0;
+			}
+			dev_info(data->dev,
+				 "Shark DVFS: %s OPP authority (%u levels)\n",
+				 dvfs_domain_name, count);
+			return 0;
+		}
+	}
+#endif
 
 	dvfs_block = ect_get_block(BLOCK_DVFS);
 	if (dvfs_block == NULL)
@@ -906,6 +949,20 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	data->min_freq = freq_array[3];
 	data->max_freq = freq_array[4];
 	data->reboot_freq = freq_array[5];
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	data->devfreq_profile.initial_freq = exynos_devfreq_shark_rate(
+		devfreq_domain_name, data->devfreq_profile.initial_freq);
+	data->default_qos = exynos_devfreq_shark_rate(devfreq_domain_name,
+		data->default_qos);
+	data->devfreq_profile.suspend_freq = exynos_devfreq_shark_rate(
+		devfreq_domain_name, data->devfreq_profile.suspend_freq);
+	data->min_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
+		data->min_freq);
+	data->max_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
+		data->max_freq);
+	data->reboot_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
+		data->reboot_freq);
+#endif
 
 	if (of_property_read_u32_array(np, "boot_info", (u32 *)&boot_array,
 				       (size_t)(ARRAY_SIZE(boot_array)))) {
@@ -915,6 +972,10 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	} else {
 		data->boot_qos_timeout = boot_array[0];
 		data->boot_freq = boot_array[1];
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		data->boot_freq = exynos_devfreq_shark_rate(devfreq_domain_name,
+			data->boot_freq);
+#endif
 	}
 	if (of_property_read_string(np, "use_get_dev", &use_get_dev))
 		return -ENODEV;

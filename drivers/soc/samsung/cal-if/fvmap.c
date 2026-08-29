@@ -5,6 +5,9 @@
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
 #include <soc/samsung/cal-if.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 
 #include "fvmap.h"
 #include "cmucal.h"
@@ -186,6 +189,15 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 	unsigned int paddr_offset, fvaddr_offset;
 	int size;
 	int i, j;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int shark_live_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_live_volts[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_volts[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_count;
+	bool shark_override;
+	int shark_ret;
+#endif
 
 	fvmap_header = map_base;
 	header = sram_base;
@@ -222,13 +234,38 @@ static void fvmap_copy_from_sram(void __iomem *map_base, void __iomem *sram_base
 
 		old = sram_base + fvmap_header[i].o_ratevolt;
 		new = map_base + fvmap_header[i].o_ratevolt;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		shark_override = false;
+		shark_count = fvmap_header[i].num_of_lv;
+		if (shark_count <= SHARK_SOC_MAX_DOMAIN_OPPS) {
+			for (j = 0; j < shark_count; j++) {
+				shark_live_rates[j] = old->table[j].rate;
+				shark_live_volts[j] = old->table[j].volt;
+			}
+			shark_ret = shark_soc_fvmap_prepare(
+				vclk->name, ACPM_VCLK_TYPE | i, shark_count,
+				shark_live_rates, shark_live_volts,
+				shark_rates, shark_volts);
+			if (shark_ret > 0)
+				shark_override = true;
+			else if (shark_ret < 0)
+				pr_warn("Shark DVFS: keeping live FVMap for %s (%d)\n",
+					vclk->name, shark_ret);
+		}
+#endif
 		if (init_margin_table[i])
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE,
 						init_margin_table[i]);
 
 		for (j = 0; j < fvmap_header[i].num_of_lv; j++) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+			if (shark_override) {
+				old->table[j].rate = shark_rates[j];
+				old->table[j].volt = shark_volts[j];
+			}
+#endif
 
-			/* increase cpucl1 voltages */
+			/* Fallback when Shark rejects an incompatible FVMap. */
 			if (strcmp(vclk->name, "dvfs_cpucl1") == 0) {
 				if ((old->table[j].rate == 1898000) && (old->table[j].volt < 1200000))
 					old->table[j].volt = 1200000;

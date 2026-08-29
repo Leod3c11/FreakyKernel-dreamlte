@@ -27,11 +27,28 @@
 #ifdef CONFIG_OF
 #include <linux/of.h>
 #endif
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 #ifdef CONFIG_MALI_DVFS
 #ifdef CONFIG_CAL_IF
 #include <soc/samsung/cal-if.h>
 #endif
 static gpu_dvfs_info gpu_dvfs_table_default[DVFS_TABLE_ROW_MAX];
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+static int gpu_shark_rate(int rate)
+{
+	unsigned int resolved;
+
+	if (rate <= 0)
+		return rate;
+	if (!shark_soc_resolve_rate("dvfs_g3d",
+				    SHARK_SOC_DOMAIN_ID_ANY,
+				    rate, &resolved))
+		return resolved;
+	return rate;
+}
+#endif
 #endif
 
 #if MALI_SEC_SECURE_RENDERING
@@ -271,6 +288,10 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 
 #ifdef CONFIG_CAL_IF
 	platform->gpu_dvfs_start_clock = cal_dfs_get_boot_freq(platform->g3d_cmu_cal_id);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	platform->gpu_dvfs_start_clock = gpu_shark_rate(
+		platform->gpu_dvfs_start_clock);
+#endif
 	GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "get g3d start clock from ect : %d\n", platform->gpu_dvfs_start_clock);
 #else
 	gpu_update_config_data_int(np, "gpu_dvfs_start_clock", &platform->gpu_dvfs_start_clock);
@@ -286,6 +307,12 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	gpu_update_config_data_int(np, "gpu_max_clock", &platform->gpu_max_clock);
 	gpu_update_config_data_int(np, "gpu_max_clock_limit", &platform->gpu_max_clock_limit);
 	gpu_update_config_data_int(np, "gpu_min_clock", &platform->gpu_min_clock);
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	platform->gpu_max_clock = gpu_shark_rate(platform->gpu_max_clock);
+	platform->gpu_max_clock_limit = gpu_shark_rate(
+		platform->gpu_max_clock_limit);
+	platform->gpu_min_clock = gpu_shark_rate(platform->gpu_min_clock);
+#endif
 	gpu_update_config_data_int(np, "gpu_dvfs_bl_config_clock", &platform->gpu_dvfs_config_clock);
 	gpu_update_config_data_int(np, "gpu_default_voltage", &platform->gpu_default_vol);
 	gpu_update_config_data_int(np, "gpu_cold_minimum_vol", &platform->cold_min_vol);
@@ -361,6 +388,13 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 	int table_idx;
 	struct device_node *np;
 	int i, j, cal_freq, cal_vol;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	unsigned int shark_rates[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_volts[SHARK_SOC_MAX_DOMAIN_OPPS];
+	unsigned int shark_count = 0;
+	bool shark_table = false;
+	int ret;
+#endif
 
 	np = kbdev->dev->of_node;
 	gpu_update_config_data_int_array(np, "gpu_dvfs_table_size", of_data_int_array, 2);
@@ -376,9 +410,37 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 	dvfs_table = gpu_dvfs_table_default;
 
 	cal_get_dvfs_lv_num = cal_dfs_get_lv_num(platform->g3d_cmu_cal_id);
-	cal_table_size = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id, g3d_rate_volt);
-	if (!cal_table_size)
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "Failed to get G3D ASV table\n");
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	ret = shark_soc_get_domain_table("dvfs_g3d",
+					 platform->g3d_cmu_cal_id, shark_rates,
+					 shark_volts, ARRAY_SIZE(shark_rates),
+					 &shark_count);
+	if (!ret && shark_count == cal_get_dvfs_lv_num &&
+	    shark_count <= ARRAY_SIZE(g3d_rate_volt)) {
+		for (i = 0; i < shark_count; i++) {
+			if (!shark_rates[i] || !shark_volts[i] ||
+			    (i && shark_rates[i] >= shark_rates[i - 1]))
+				break;
+		}
+		if (i == shark_count) {
+			for (i = 0; i < shark_count; i++) {
+				g3d_rate_volt[i].rate = shark_rates[i];
+				g3d_rate_volt[i].volt = shark_volts[i];
+			}
+			cal_table_size = shark_count;
+			shark_table = true;
+		}
+	}
+	if (!shark_table)
+#endif
+		cal_table_size = cal_dfs_get_rate_asv_table(
+			platform->g3d_cmu_cal_id, g3d_rate_volt);
+	if (!cal_table_size || cal_table_size != cal_get_dvfs_lv_num) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"Invalid G3D CAL/Shark ASV table (%d/%d)\n",
+			cal_table_size, cal_get_dvfs_lv_num);
+		return -EINVAL;
+	}
 
 	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "ECT table(%d) and gpu driver(%d)\n",
 			cal_get_dvfs_lv_num, dvfs_table_row_num);

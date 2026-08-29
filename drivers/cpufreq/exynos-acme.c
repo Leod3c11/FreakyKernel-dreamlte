@@ -887,6 +887,8 @@ static __init int init_table(struct exynos_cpufreq_domain *domain)
 	unsigned int *volt_table;
 	struct exynos_cpufreq_dm *dm;
 	struct exynos_ufc *ufc;
+	int rate_count;
+	int volt_count;
 	int ret = 0;
 
 	/*
@@ -904,8 +906,23 @@ static __init int init_table(struct exynos_cpufreq_domain *domain)
 		goto free_table;
 	}
 
-	cal_dfs_get_rate_table(domain->cal_id, table);
-	cal_dfs_get_asv_table(domain->cal_id, volt_table);
+	rate_count = cal_dfs_get_rate_table(domain->cal_id, table);
+	volt_count = cal_dfs_get_asv_table(domain->cal_id, volt_table);
+	if (rate_count != domain->table_size || volt_count != rate_count) {
+		pr_err("CPUFREQ domain%d: invalid CAL/Shark table shape (%d/%d/%u)\n",
+		       domain->id, rate_count, volt_count, domain->table_size);
+		ret = -EINVAL;
+		goto free_volt_table;
+	}
+	for (index = 0; index < domain->table_size; index++) {
+		if (!table[index] ||
+		    (index && table[index] >= table[index - 1])) {
+			pr_err("CPUFREQ domain%d: unordered CAL/Shark table at L%u\n",
+			       domain->id, index);
+			ret = -EINVAL;
+			goto free_volt_table;
+		}
+	}
 
 	for (index = 0; index < domain->table_size; index++) {
 		domain->freq_table[index].driver_data = index;
@@ -933,6 +950,7 @@ static __init int init_table(struct exynos_cpufreq_domain *domain)
 	domain->freq_table[index].driver_data = index;
 	domain->freq_table[index].frequency = CPUFREQ_TABLE_END;
 
+free_volt_table:
 	kfree(volt_table);
 
 free_table:
@@ -1301,6 +1319,8 @@ static __init int early_init_domain(struct exynos_cpufreq_domain *domain,
 
 	/* Get size of frequency table from CAL */
 	domain->table_size = cal_dfs_get_lv_num(domain->cal_id);
+	if (!domain->table_size)
+		return -EINVAL;
 
 	/* Get cpumask which belongs to domain */
 	ret = of_property_read_string(dn, "sibling-cpus", &buf);

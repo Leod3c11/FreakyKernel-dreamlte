@@ -4,6 +4,9 @@
 #include <linux/delay.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-pmu.h>
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+#include <soc/samsung/exynos-soc-interface.h>
+#endif
 
 #include "cmucal.h"
 #include "ra.h"
@@ -777,6 +780,9 @@ static void ra_get_pll_rate_table(struct cmucal_clk *clk)
 	struct cmucal_pll_table *table;
 	struct ect_pll *pll_unit;
 	struct ect_pll_frequency *pll_frequency;
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	const struct shark_soc_catalog_table *shark_table;
+#endif
 	int i;
 
 	pll_block = ect_get_block(BLOCK_PLL);
@@ -792,7 +798,29 @@ static void ra_get_pll_rate_table(struct cmucal_clk *clk)
 	if (!table)
 		return;
 
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+	shark_table = shark_soc_is_enabled() ?
+		shark_soc_catalog_find("PLL", clk->name, "rates",
+				       SHARK_SOC_CATALOG_PLL_RATES) : NULL;
+	if (shark_table && (shark_table->rows != pll_unit->num_of_frequency ||
+			    shark_table->cols != 5U)) {
+		pr_warn("Shark DVFS: rejected PLL shape for %s\n", clk->name);
+		shark_table = NULL;
+	}
+#endif
 	for (i = 0; i < pll_unit->num_of_frequency; ++i) {
+#ifdef CONFIG_SHARK_CUSTOM_DVFS
+		if (shark_table) {
+			const u64 *data = &shark_table->data[i * 5U];
+
+			table[i].rate = (unsigned int)data[0];
+			table[i].pdiv = (unsigned int)data[1];
+			table[i].mdiv = (unsigned int)data[2];
+			table[i].sdiv = (unsigned int)data[3];
+			table[i].kdiv = (unsigned int)data[4];
+			continue;
+		}
+#endif
 		pll_frequency = &pll_unit->frequency_list[i];
 
 		table[i].rate = pll_frequency->frequency;

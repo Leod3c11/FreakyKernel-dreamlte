@@ -40,15 +40,22 @@
 
 #define INT	0
 
-static unsigned int ect_find_constraint_freq(struct ect_minlock_domain *ect_domain,
-					unsigned int freq)
+static int ect_find_constraint_freq(struct ect_minlock_domain *ect_domain,
+				    unsigned int freq,
+				    unsigned int *constraint_freq)
 {
 	unsigned int i;
 
-	for (i =0; i < ect_domain->num_of_level; i++)
-		if (ect_domain->level[i].main_frequencies == freq) break;
+	if (!ect_domain || !constraint_freq)
+		return -EINVAL;
+	for (i = 0; i < ect_domain->num_of_level; i++) {
+		if (ect_domain->level[i].main_frequencies == freq) {
+			*constraint_freq = ect_domain->level[i].sub_frequencies;
+			return 0;
+		}
+	}
 
-	return ect_domain->level[i].sub_frequencies;
+	return -ENOENT;
 }
 
 static int exynos8895_mif_constraint_parse(struct exynos_devfreq_data *data,
@@ -76,6 +83,11 @@ static int exynos8895_mif_constraint_parse(struct exynos_devfreq_data *data,
 	dvfs_domain = ect_dvfs_get_domain(dvfs_block, "dvfs_mif");
 	if (dvfs_domain == NULL)
 		return -ENODEV;
+	if (dvfs_domain->num_of_level != data->max_state)
+		return -EINVAL;
+	for (i = 0; i < data->max_state; i++)
+		if (dvfs_domain->list_level[i].level != data->opp_list[i].freq)
+			return -EINVAL;
 
 	/* Although there is not any constraint, MIF table should be sent to FVP */
 	min_block = ect_get_block(BLOCK_MINLOCK);
@@ -84,7 +96,8 @@ static int exynos8895_mif_constraint_parse(struct exynos_devfreq_data *data,
 		const_flag = 0;
 	}
 
-	ect_domain = ect_minlock_get_domain(min_block, "dvfs_mif");
+	ect_domain = min_block ?
+		ect_minlock_get_domain(min_block, "dvfs_mif") : NULL;
 	if (ect_domain == NULL) {
 		dev_info(data->dev, "There is not a domain in min block\n");
 		const_flag = 0;
@@ -122,7 +135,7 @@ static int exynos8895_mif_constraint_parse(struct exynos_devfreq_data *data,
 	config.response = true;
 	config.indirection = false;
 
-	for (i = 0; i < dvfs_domain->num_of_level; i++) {
+	for (i = 0; i < data->max_state; i++) {
 		if (data->opp_list[i].freq > max_freq ||
 				data->opp_list[i].freq < min_freq)
 			continue;
@@ -133,9 +146,20 @@ static int exynos8895_mif_constraint_parse(struct exynos_devfreq_data *data,
 		config.cmd[3] = 0;
 #ifdef CONFIG_EXYNOS_DVFS_MANAGER
 		if (const_flag) {
+			unsigned int constraint_freq;
+
 			const_table[use_level].master_freq = data->opp_list[i].freq;
-			const_table[use_level].constraint_freq
-				= ect_find_constraint_freq(ect_domain, data->opp_list[i].freq);
+			ret = ect_find_constraint_freq(ect_domain,
+						       data->opp_list[i].freq,
+						       &constraint_freq);
+			if (ret) {
+				dev_err(data->dev,
+					"missing MIF minlock entry for %u kHz\n",
+					data->opp_list[i].freq);
+				return ret;
+			}
+			const_table[use_level].constraint_freq =
+				constraint_freq;
 			config.cmd[3] = const_table[use_level].constraint_freq;
 		}
 #endif
