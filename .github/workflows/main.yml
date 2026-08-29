@@ -1,0 +1,184 @@
+name: Build FreakyKernel dreamlte
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - custom-dvfs
+
+jobs:
+  build:
+    name: Build Kernel 4.4 - dreamlte
+    runs-on: ubuntu-22.04
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      DEFCONFIG: exynos8895-dreamlte_defconfig
+      OUT_DIR: out
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            flex \
+            git \
+            libelf-dev \
+            libncurses5-dev \
+            libssl-dev \
+            libtinfo5 \
+            python3 \
+            python-is-python3 \
+            rsync \
+            unzip \
+            zip
+
+      - name: Clone GCC 4.9 toolchain
+        run: |
+          git clone \
+            --depth=1 \
+            --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            $GITHUB_WORKSPACE/toolchain
+
+      - name: Configure toolchain
+        run: |
+          echo "$GITHUB_WORKSPACE/toolchain/bin" >> "$GITHUB_PATH"
+
+          echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
+
+      - name: Show compiler version
+        run: |
+          $CROSS_COMPILE"gcc" --version
+
+      - name: Create output directory
+        run: |
+          mkdir -p "$OUT_DIR"
+
+      - name: Load dreamlte defconfig
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            "$DEFCONFIG"
+
+      - name: Show kernel configuration
+        run: |
+          echo "=========================================="
+          echo " Kernel:"
+          echo "=========================================="
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            kernelversion
+
+          echo
+          echo "=========================================="
+          echo " Local version:"
+          echo "=========================================="
+
+          grep "^CONFIG_LOCALVERSION=" "$OUT_DIR/.config" || true
+
+          echo
+          echo "=========================================="
+          echo " DTB Tool:"
+          echo "=========================================="
+
+          grep "^CONFIG_EXYNOS_DTBTOOL=" "$OUT_DIR/.config" || true
+
+      - name: Build kernel
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$(nproc)"
+
+      - name: Check build output
+        run: |
+          echo "=========================================="
+          echo " Build output"
+          echo "=========================================="
+
+          BOOT_DIR="$OUT_DIR/arch/arm64/boot"
+
+          ls -lah "$BOOT_DIR"
+
+          echo
+          echo "Kernel images:"
+          find "$BOOT_DIR" \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -name "Image" \
+              -o -name "Image.gz" \
+              -o -name "Image-dtb" \
+              -o -name "Image.gz-dtb" \
+              -o -name "dtb.img" \
+            \) \
+            -print
+
+          echo
+          echo "DTBs:"
+          find "$BOOT_DIR/dts" \
+            -type f \
+            -name "*.dtb" \
+            -print 2>/dev/null || true
+
+          if [ ! -f "$BOOT_DIR/Image.gz" ]; then
+            echo "::error::Image.gz was not generated!"
+            exit 1
+          fi
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+
+          BOOT_DIR="$OUT_DIR/arch/arm64/boot"
+
+          cp "$BOOT_DIR/Image.gz" artifacts/
+
+          if [ -f "$BOOT_DIR/Image" ]; then
+            cp "$BOOT_DIR/Image" artifacts/
+          fi
+
+          if [ -f "$BOOT_DIR/Image-dtb" ]; then
+            cp "$BOOT_DIR/Image-dtb" artifacts/
+          fi
+
+          if [ -f "$BOOT_DIR/Image.gz-dtb" ]; then
+            cp "$BOOT_DIR/Image.gz-dtb" artifacts/
+          fi
+
+          if [ -f "$BOOT_DIR/dtb.img" ]; then
+            cp "$BOOT_DIR/dtb.img" artifacts/
+          fi
+
+          cp "$OUT_DIR/.config" artifacts/kernel.config
+
+          echo "Artifacts:"
+          ls -lah artifacts/
+
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreakyKernel-dreamlte-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
