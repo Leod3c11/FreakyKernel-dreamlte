@@ -26,6 +26,7 @@
 #include <linux/exynos-ss.h>
 #include <linux/io.h>
 #include <linux/sched.h>
+#include <linux/string.h>
 #include <linux/exynos-wd.h>
 
 #include <soc/samsung/exynos-devfreq.h>
@@ -794,15 +795,18 @@ struct device *find_exynos_devfreq_device(enum exynos_dm_type dm_type)
 
 #ifdef CONFIG_OF
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
+static bool exynos_devfreq_is_shark_mif(const char *name)
+{
+	return name && !strcmp(name, "dvfs_mif");
+}
+
 static unsigned int exynos_devfreq_shark_rate(const char *name,
 					      unsigned int rate)
 {
-	unsigned int resolved;
+	if (!exynos_devfreq_is_shark_mif(name))
+		return rate;
 
-	if (!shark_soc_resolve_rate(name, SHARK_SOC_DOMAIN_ID_ANY, rate,
-				    &resolved))
-		return resolved;
-	return rate;
+	return (unsigned int)shark_mif_snap_freq(rate);
 }
 #endif
 
@@ -813,30 +817,24 @@ static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char
 	void *dvfs_block;
 	struct ect_dvfs_domain *dvfs_domain;
 #ifdef CONFIG_SHARK_CUSTOM_DVFS
-	unsigned int rates[SHARK_SOC_MAX_DOMAIN_OPPS];
-	unsigned int count = 0;
-	int ret;
+	if (exynos_devfreq_is_shark_mif(dvfs_domain_name)) {
+		unsigned int count = SHARK_MIF_DVFS_LEVEL_COUNT;
 
-	ret = shark_soc_get_domain_rate_table(dvfs_domain_name,
-					      SHARK_SOC_DOMAIN_ID_ANY, rates,
-					      ARRAY_SIZE(rates), &count);
-	if (!ret && count && count <= ARRAY_SIZE(data->opp_list)) {
+		if (count > ARRAY_SIZE(data->opp_list))
+			return -EINVAL;
+
+		data->max_state = count;
 		for (i = 0; i < count; i++) {
-			if (!rates[i] || (i && rates[i] >= rates[i - 1]))
-				break;
+			data->opp_list[i].idx = i;
+			data->opp_list[i].freq =
+				(unsigned int)shark_mif_get_freq(i);
+			data->opp_list[i].volt = 0;
 		}
-		if (i == count) {
-			data->max_state = count;
-			for (i = 0; i < count; i++) {
-				data->opp_list[i].idx = i;
-				data->opp_list[i].freq = rates[i];
-				data->opp_list[i].volt = 0;
-			}
-			dev_info(data->dev,
-				 "Shark DVFS: %s OPP authority (%u levels)\n",
-				 dvfs_domain_name, count);
-			return 0;
-		}
+
+		dev_info(data->dev,
+			 "Shark DVFS: %s using S8 MIF table (%u levels)\n",
+			 dvfs_domain_name, count);
+		return 0;
 	}
 #endif
 
