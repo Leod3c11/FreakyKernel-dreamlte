@@ -18,6 +18,7 @@
 #include <mali_kbase.h>
 
 #include "mali_kbase_platform.h"
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 #include "gpu_custom_interface.h"
 #include "gpu_dvfs_handler.h"
 #include "gpu_notifier.h"
@@ -350,76 +351,87 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_DVFS
 static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 {
-	struct exynos_context *platform = kbdev->platform_context;
-	gpu_dvfs_info *dvfs_table;
-	struct dvfs_rate_volt g3d_rate_volt[48];
-	int cal_get_dvfs_lv_num;
-	int cal_table_size;
-	int of_data_int_array[OF_DATA_NUM_MAX];
-	int dvfs_table_row_num = 0, dvfs_table_col_num = 0;
-	int dvfs_table_size = 0;
-	int table_idx;
-	struct device_node *np;
-	int i, j, cal_freq, cal_vol;
+    struct exynos_context *platform = kbdev->platform_context;
+    struct dvfs_rate_volt rate_volt[DVFS_TABLE_ROW_MAX];
+    unsigned int count = EXYNOS8895_G3D_OPP_COUNT;
+    int cal_count;
+    unsigned int i;
 
-	np = kbdev->dev->of_node;
-	gpu_update_config_data_int_array(np, "gpu_dvfs_table_size", of_data_int_array, 2);
+    if (count > DVFS_TABLE_ROW_MAX) {
+        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+                "G3D hardcoded table too large: %u > %u\n",
+                count, DVFS_TABLE_ROW_MAX);
+        return -EINVAL;
+    }
 
-	dvfs_table_row_num = of_data_int_array[0];
-	dvfs_table_col_num = of_data_int_array[1];
-	dvfs_table_size = dvfs_table_row_num * dvfs_table_col_num;
+    memset(gpu_dvfs_table_default, 0, sizeof(gpu_dvfs_table_default));
+    memset(rate_volt, 0, sizeof(rate_volt));
 
-	if (dvfs_table_size > OF_DATA_NUM_MAX) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "dvfs_table size is not enough\n");
-		return -1;
-	}
-	dvfs_table = gpu_dvfs_table_default;
+    cal_count = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id,
+                                           rate_volt);
+    if (cal_count != count) {
+        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+                "G3D hardcoded CAL table mismatch: cal=%d source=%u\n",
+                cal_count, count);
+        return -EINVAL;
+    }
 
-	cal_get_dvfs_lv_num = cal_dfs_get_lv_num(platform->g3d_cmu_cal_id);
-	cal_table_size = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id, g3d_rate_volt);
-	if (!cal_table_size)
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "Failed to get G3D ASV table\n");
+    for (i = 0; i < count; i++) {
+        const struct exynos8895_g3d_hardcoded_opp *opp =
+            &exynos8895_g3d_opp_table[i];
+        gpu_dvfs_info *dst = &gpu_dvfs_table_default[i];
 
-	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "ECT table(%d) and gpu driver(%d)\n",
-			cal_get_dvfs_lv_num, dvfs_table_row_num);
+        if (rate_volt[i].rate != opp->clock_khz) {
+            GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+                    "G3D hardcoded order mismatch at %u: %d != %u\n",
+                    i, rate_volt[i].rate, opp->clock_khz);
+            return -EINVAL;
+        }
 
-	gpu_update_config_data_int_array(np, "gpu_dvfs_table", of_data_int_array, dvfs_table_size);
+        dst->clock = opp->clock_khz;
+        dst->voltage = rate_volt[i].volt;
+        dst->min_threshold = opp->min_threshold;
+        dst->max_threshold = opp->max_threshold;
+        dst->down_staycount = opp->down_staycount;
+        dst->mem_freq = opp->mem_freq;
+        dst->cpu_little_min_freq = opp->cpu_little_min_freq;
+        dst->cpu_big_max_freq = opp->cpu_big_max_freq ?
+                                opp->cpu_big_max_freq : CPU_MAX;
 
-	for (i = 0; i < cal_get_dvfs_lv_num; i++) {
-		cal_freq = g3d_rate_volt[i].rate;
-		cal_vol = g3d_rate_volt[i].volt;
-		if (cal_freq <= platform->gpu_max_clock && cal_freq >= platform->gpu_min_clock) {
-			for (j = 0; j < dvfs_table_row_num; j++) {
-				table_idx = j * dvfs_table_col_num;
-				// Compare cal_freq with DVFS table freq
-				if (cal_freq == of_data_int_array[table_idx]) {
-					dvfs_table[j].clock = cal_freq;
-					dvfs_table[j].voltage = cal_vol;
-					dvfs_table[j].min_threshold = of_data_int_array[table_idx+1];
-					dvfs_table[j].max_threshold = of_data_int_array[table_idx+2];
-					dvfs_table[j].down_staycount = of_data_int_array[table_idx+3];
-					dvfs_table[j].mem_freq = of_data_int_array[table_idx+4];
-					dvfs_table[j].cpu_little_min_freq = of_data_int_array[table_idx+5];
-					GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "G3D %7dKhz ASV is %duV\n", cal_freq, cal_vol);
-					if (platform->gpu_pmqos_cpu_cluster_num == 3) {
-						dvfs_table[j].cpu_middle_min_freq = of_data_int_array[table_idx+6];
-						dvfs_table[j].cpu_big_max_freq = (of_data_int_array[table_idx+7] ? of_data_int_array[table_idx+7]:CPU_MAX);
-					GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "up [%d] down [%d] staycnt [%d] mif [%d] lit [%d] mid [%d] big [%d]\n",
-							dvfs_table[j].max_threshold, dvfs_table[j].min_threshold, dvfs_table[j].down_staycount,
-							dvfs_table[j].mem_freq, dvfs_table[j].cpu_little_min_freq, dvfs_table[j].cpu_middle_min_freq,
-							dvfs_table[j].cpu_big_max_freq);
-					} else {
-						//Assuming cpu cluster number is 2
-						dvfs_table[j].cpu_big_max_freq = (of_data_int_array[table_idx+6] ? of_data_int_array[table_idx+6]:CPU_MAX);
-						GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "up [%d] down [%d] staycnt [%d] mif [%d] lit [%d] big [%d]\n",
-								dvfs_table[j].max_threshold, dvfs_table[j].min_threshold, dvfs_table[j].down_staycount,
-								dvfs_table[j].mem_freq, dvfs_table[j].cpu_little_min_freq, dvfs_table[j].cpu_big_max_freq);
-					}
-				}
-			}
-		}
-	}
-	return 0;
+        GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+                "G3D HARD OPP[%02u] %7u kHz anchor=%7u margin=%d voltage=%u uV\n",
+                i, opp->clock_khz, opp->acpm_anchor_khz,
+                opp->volt_margin_uv, dst->voltage);
+    }
+
+    /* Source table, not DT/ECT, owns all GPU limits from this point on. */
+    platform->gpu_max_clock = exynos8895_g3d_opp_table[0].clock_khz;
+    platform->gpu_max_clock_limit = platform->gpu_max_clock;
+    platform->gpu_min_clock =
+        exynos8895_g3d_opp_table[count - 1].clock_khz;
+    platform->gpu_dvfs_start_clock = EXYNOS8895_G3D_START_KHZ;
+    platform->gpu_dvfs_config_clock = EXYNOS8895_G3D_START_KHZ;
+    platform->interactive.highspeed_clock = EXYNOS8895_G3D_HIGHSPEED_KHZ;
+
+    for (i = 0; i < G3D_MAX_GOVERNOR_NUM; i++) {
+        gpu_dvfs_update_start_clk(i, platform->gpu_dvfs_start_clock);
+        gpu_dvfs_update_table(i, gpu_dvfs_table_default);
+        gpu_dvfs_update_table_size(i, count);
+    }
+
+    if (TMU_LOCK_CLK_END ==
+        (sizeof(exynos8895_g3d_thermal_khz) /
+         sizeof(exynos8895_g3d_thermal_khz[0]))) {
+        for (i = 0; i < TMU_LOCK_CLK_END; i++)
+            platform->tmu_lock_clk[i] = exynos8895_g3d_thermal_khz[i];
+    }
+
+    GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+            "G3D hardcoded source table active: levels=%u max=%d min=%d start=%d\n",
+            count, platform->gpu_max_clock, platform->gpu_min_clock,
+            platform->gpu_dvfs_start_clock);
+
+    return 0;
 }
 #endif
 
