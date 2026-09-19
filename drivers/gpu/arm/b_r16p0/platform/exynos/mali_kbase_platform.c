@@ -314,6 +314,10 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_RT_PM
 	gpu_update_config_data_bool(np, "gpu_dvs", &platform->dvs_status);
 	gpu_update_config_data_bool(np, "gpu_inter_frame_pm", &platform->inter_frame_pm_feature);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	/* Hardcoded G3D OPPs own PLL state; keep IFPM disabled even with stock DTB. */
+	platform->inter_frame_pm_feature = false;
+#endif
 #else
 	platform->dvs_status = 0;
 	platform->inter_frame_pm_feature = 0;

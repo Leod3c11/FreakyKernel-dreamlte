@@ -96,8 +96,18 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 	prev_step = platform->step;
 
 	if (!gpu_control_is_power_on(pkbdev)) {
+#if defined(CONFIG_MALI_DVFS) && defined(CONFIG_SOC_EXYNOS8895)
+		/* Runtime/IFPM may temporarily gate G3D. Remember the newest OPP and
+		 * let pm_callback_runtime_on() apply it once registers are accessible. */
+		platform->dvfs_pending = clk;
+		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
+			"%s: G3D off, defer %d kHz until power-on\n",
+			__func__, clk);
+		return 0;
+#else
 		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: can't set clock and voltage in the power-off state!\n", __func__);
 		return -1;
+#endif
 	}
 
 	mutex_lock(&platform->gpu_clock_lock);
@@ -116,6 +126,10 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 	}
 
 	if (platform->dvs_is_enabled || !platform->power_status) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+		if (!platform->power_status)
+			platform->dvfs_pending = clk;
+#endif
 		mutex_unlock(&platform->gpu_clock_lock);
 		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: can't control clock and voltage in dvs and power off %d %d\n",
 				__func__,

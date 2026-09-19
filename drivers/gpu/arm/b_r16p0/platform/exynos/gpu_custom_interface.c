@@ -16,8 +16,10 @@
  */
 
 #include <mali_kbase.h>
+#include <mali_kbase_pm.h>
 
 #include <linux/fb.h>
+#include <linux/delay.h>
 #include <soc/samsung/exynos8895-g3d-hardcoded.h>
 
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
@@ -188,6 +190,7 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	unsigned int clk = 0;
 	int ret, i, policy_count;
 	static bool cur_state;
+	static bool pm_ref_held;
 	const struct kbase_pm_policy *const *policy_list;
 	static const struct kbase_pm_policy *prev_policy;
 	static bool prev_tmu_status = true;
@@ -220,6 +223,10 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 		if (!platform->dvfs_status)
 			gpu_dvfs_on_off(true);
 #endif /* CONFIG_MALI_DVFS */
+		if (pm_ref_held) {
+			kbase_pm_context_idle(pkbdev);
+			pm_ref_held = false;
+		}
 		cur_state = false;
 	} else {
 		policy_count = kbase_pm_list_policies(&policy_list);
@@ -229,6 +236,29 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 				break;
 			}
 		}
+		if (!pm_ref_held) {
+			int retry;
+
+			kbase_pm_context_active(pkbdev);
+			pm_ref_held = true;
+
+			for (retry = 0; retry < 100; retry++) {
+				if (gpu_control_is_power_on(pkbdev) > 0)
+					break;
+				usleep_range(1000, 2000);
+			}
+
+			if (gpu_control_is_power_on(pkbdev) <= 0) {
+				GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+					"%s: G3D did not power on for manual clock\n",
+					__func__);
+				kbase_pm_context_idle(pkbdev);
+				pm_ref_held = false;
+				kbase_pm_set_policy(pkbdev, prev_policy);
+				return -EIO;
+			}
+		}
+
 		platform->tmu_status = false;
 #ifdef CONFIG_MALI_DVFS
 		if (platform->dvfs_status)
@@ -245,6 +275,10 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 			if (!platform->dvfs_status && prev_dvfs_status)
 				gpu_dvfs_on_off(true);
 #endif /* CONFIG_MALI_DVFS */
+			if (pm_ref_held) {
+				kbase_pm_context_idle(pkbdev);
+				pm_ref_held = false;
+			}
 			cur_state = false;
 			return ret;
 		}
