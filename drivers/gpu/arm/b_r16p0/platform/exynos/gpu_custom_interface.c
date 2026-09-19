@@ -16,8 +16,10 @@
  */
 
 #include <mali_kbase.h>
+#include <mali_kbase_pm.h>
 
 #include <linux/fb.h>
+#include <linux/delay.h>
 
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
 #include "exynos_tmu.h"
@@ -101,6 +103,7 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	unsigned int clk = 0;
 	int ret, i, policy_count;
 	static bool cur_state;
+	static bool pm_ref_held;
 	const struct kbase_pm_policy *const *policy_list;
 	static const struct kbase_pm_policy *prev_policy;
 	static bool prev_tmu_status = true;
@@ -118,7 +121,7 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 		return -ENOENT;
 	}
 
-	if (!cur_state) {
+	if (!cur_state && clk != 0) {
 		prev_tmu_status = platform->tmu_status;
 #ifdef CONFIG_MALI_DVFS
 		prev_dvfs_status = platform->dvfs_status;
@@ -127,29 +130,90 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	}
 
 	if (clk == 0) {
-		kbase_pm_set_policy(pkbdev, prev_policy);
+		if (cur_state && prev_policy)
+			kbase_pm_set_policy(pkbdev, prev_policy);
 		platform->tmu_status = prev_tmu_status;
 #ifdef CONFIG_MALI_DVFS
-		if (!platform->dvfs_status)
+		if (!platform->dvfs_status && prev_dvfs_status)
 			gpu_dvfs_on_off(true);
 #endif /* CONFIG_MALI_DVFS */
-		cur_state = false;
-	} else {
-		policy_count = kbase_pm_list_policies(&policy_list);
-		for (i = 0; i < policy_count; i++) {
-			if (sysfs_streq(policy_list[i]->name, "always_on")) {
-				kbase_pm_set_policy(pkbdev, policy_list[i]);
-				break;
-			}
+		if (pm_ref_held) {
+			kbase_pm_context_idle(pkbdev);
+			pm_ref_held = false;
 		}
-		platform->tmu_status = false;
-#ifdef CONFIG_MALI_DVFS
-		if (platform->dvfs_status)
-			gpu_dvfs_on_off(false);
-#endif /* CONFIG_MALI_DVFS */
-		gpu_set_target_clk_vol(clk, false);
-		cur_state = true;
+		cur_state = false;
+		return count;
 	}
+
+	policy_count = kbase_pm_list_policies(&policy_list);
+	for (i = 0; i < policy_count; i++) {
+		if (sysfs_streq(policy_list[i]->name, "always_on")) {
+			kbase_pm_set_policy(pkbdev, policy_list[i]);
+			break;
+		}
+	}
+
+	/*
+	 * A PM policy alone does not guarantee that G3D is powered while there is
+	 * no GPU job queued.  Hold an active context for the whole manual-clock
+	 * session so sysfs reads reflect the physical PLL/rail and the clock write
+	 * cannot race runtime power-off.  echo 0 > clock releases this reference.
+	 */
+	if (!pm_ref_held) {
+		int retry;
+
+		kbase_pm_context_active(pkbdev);
+		pm_ref_held = true;
+
+		for (retry = 0; retry < 100; retry++) {
+			if (gpu_control_is_power_on(pkbdev) > 0)
+				break;
+			usleep_range(1000, 2000);
+		}
+
+		if (gpu_control_is_power_on(pkbdev) <= 0) {
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"G3D hardcoded manual: power-on timeout for %u kHz\n", clk);
+			kbase_pm_context_idle(pkbdev);
+			pm_ref_held = false;
+			if (prev_policy)
+				kbase_pm_set_policy(pkbdev, prev_policy);
+			return -EIO;
+		}
+	}
+
+	platform->tmu_status = false;
+#ifdef CONFIG_MALI_DVFS
+	if (platform->dvfs_status)
+		gpu_dvfs_on_off(false);
+#endif /* CONFIG_MALI_DVFS */
+
+	/* Do not swallow the real transition result. */
+	ret = gpu_set_target_clk_vol(clk, false);
+	if (ret) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D hardcoded manual: %u kHz transition failed (%d)\n",
+			clk, ret);
+		platform->tmu_status = prev_tmu_status;
+#ifdef CONFIG_MALI_DVFS
+		if (!platform->dvfs_status && prev_dvfs_status)
+			gpu_dvfs_on_off(true);
+#endif /* CONFIG_MALI_DVFS */
+		if (pm_ref_held) {
+			kbase_pm_context_idle(pkbdev);
+			pm_ref_held = false;
+		}
+		if (prev_policy)
+			kbase_pm_set_policy(pkbdev, prev_policy);
+		cur_state = false;
+		return ret;
+	}
+
+	cur_state = true;
+	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+		"G3D hardcoded manual: request=%u actual=%d voltage=%d power=%d\n",
+		clk, gpu_get_cur_clock(platform), gpu_get_cur_voltage(platform),
+		gpu_control_is_power_on(pkbdev));
 
 	return count;
 }
