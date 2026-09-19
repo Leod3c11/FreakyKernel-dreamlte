@@ -120,30 +120,17 @@ int cal_g3d_set_acpm_anchor(unsigned long rate)
     if (!opp)
         return -EINVAL;
 
-    /*
-     * dvfs_g3d is an ACPM vclk on Exynos8895. cmucal_get_id() only
-     * searches the regular vclk list, so looking it up by name here
-     * returns INVALID_CLK_ID. The ACPM DVFS enum is fixed and G3D is
-     * index 4: ACPM_VCLK_TYPE | 4.
-     */
-    id = ACPM_VCLK_TYPE | 4U;
-    vclk = cmucal_get_node(id);
-    if (!vclk) {
-        pr_err("G3D hardcoded: ACPM dvfs_g3d node 0x%x unavailable\n", id);
+    id = cmucal_get_id("dvfs_g3d");
+    if (id == INVALID_CLK_ID)
         return -ENODEV;
-    }
 
     ret = exynos_acpm_set_rate(GET_IDX(id), opp->acpm_anchor_khz);
-    if (ret) {
-        pr_err("G3D hardcoded: ACPM anchor %u kHz failed (%d)\n",
-               opp->acpm_anchor_khz, ret);
+    if (ret)
         return ret;
-    }
 
-    vclk->vrate = opp->acpm_anchor_khz;
-
-    pr_info("G3D hardcoded: ACPM anchor applied %u kHz (id=0x%x idx=%u)\n",
-            opp->acpm_anchor_khz, id, GET_IDX(id));
+    vclk = cmucal_get_node(id);
+    if (vclk)
+        vclk->vrate = opp->acpm_anchor_khz;
 
     return 0;
 }
