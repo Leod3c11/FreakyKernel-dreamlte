@@ -38,6 +38,45 @@ static unsigned int cal_g3d_pll_id(void)
     return cmucal_get_id("PLL_G3D");
 }
 
+static unsigned long cal_g3d_pms_rate_khz(
+        const struct exynos8895_g3d_hardcoded_opp *opp)
+{
+    unsigned long long hz;
+
+    if (!opp || !opp->pll_p)
+        return 0;
+
+    hz = FIN_HZ_26M;
+    hz *= opp->pll_m;
+    do_div(hz, ((unsigned int)opp->pll_p << opp->pll_s));
+
+    return (unsigned long)(hz / 1000ULL);
+}
+
+static int cal_g3d_validate_opp(
+        const struct exynos8895_g3d_hardcoded_opp *opp)
+{
+    unsigned long actual_khz;
+
+    if (!opp)
+        return -EINVAL;
+
+    actual_khz = cal_g3d_pms_rate_khz(opp);
+    if (actual_khz != opp->clock_khz) {
+        pr_err("G3D hardcoded PMS mismatch: table=%u kHz PMS=%lu kHz (M=%u P=%u S=%u)\n",
+               opp->clock_khz, actual_khz,
+               opp->pll_m, opp->pll_p, opp->pll_s);
+        return -ERANGE;
+    }
+
+    return 0;
+}
+
+/*
+ * Build a display/diagnostic voltage table without making DVFS depend on it.
+ * Several stock Exynos8895 top OPPs legitimately expose 0 uV through FVMap;
+ * that must never invalidate the frequency table.
+ */
 static int cal_g3d_build_hardcoded_voltage_table(unsigned int id,
                                                   unsigned int *table)
 {
@@ -49,25 +88,19 @@ static int cal_g3d_build_hardcoded_voltage_table(unsigned int id,
 
     stock_count = vclk_get_rate_table(id, stock_rate);
     volt_count = fvmap_get_voltage_table(id, stock_volt);
-    if (stock_count <= 0 || stock_count != volt_count)
-        return 0;
 
     for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
         const struct exynos8895_g3d_hardcoded_opp *opp =
             &exynos8895_g3d_opp_table[i];
-        int voltage = 0;
+        unsigned int voltage = opp->voltage_uv;
 
-        for (j = 0; j < stock_count; j++) {
-            if (stock_rate[j] == opp->acpm_anchor_khz) {
-                voltage = (int)stock_volt[j] + opp->volt_margin_uv;
-                break;
+        if (!voltage && stock_count > 0 && stock_count == volt_count) {
+            for (j = 0; j < stock_count; j++) {
+                if (stock_rate[j] == opp->acpm_anchor_khz) {
+                    voltage = stock_volt[j];
+                    break;
+                }
             }
-        }
-
-        if (!voltage) {
-            pr_err("G3D hardcoded: ACPM anchor %u kHz not found\n",
-                   opp->acpm_anchor_khz);
-            return 0;
         }
 
         table[i] = voltage;
@@ -75,6 +108,89 @@ static int cal_g3d_build_hardcoded_voltage_table(unsigned int id,
 
     return EXYNOS8895_G3D_OPP_COUNT;
 }
+
+int cal_g3d_set_acpm_anchor(unsigned long rate)
+{
+    const struct exynos8895_g3d_hardcoded_opp *opp;
+    struct vclk *vclk;
+    unsigned int id;
+    int ret;
+
+    opp = exynos8895_g3d_find_opp(rate);
+    if (!opp)
+        return -EINVAL;
+
+    id = cmucal_get_id("dvfs_g3d");
+    if (id == INVALID_CLK_ID)
+        return -ENODEV;
+
+    ret = exynos_acpm_set_rate(GET_IDX(id), opp->acpm_anchor_khz);
+    if (ret)
+        return ret;
+
+    vclk = cmucal_get_node(id);
+    if (vclk)
+        vclk->vrate = opp->acpm_anchor_khz;
+
+    return 0;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_set_acpm_anchor);
+
+int cal_g3d_set_pll_hardcoded(unsigned long rate)
+{
+    const struct exynos8895_g3d_hardcoded_opp *opp;
+    unsigned int pll_id;
+    unsigned int m, p, s;
+    unsigned long actual;
+    int ret;
+
+    opp = exynos8895_g3d_find_opp(rate);
+    if (!opp)
+        return -EINVAL;
+
+    ret = cal_g3d_validate_opp(opp);
+    if (ret)
+        return ret;
+
+    pll_id = cal_g3d_pll_id();
+    if (pll_id == INVALID_CLK_ID)
+        return -ENODEV;
+
+    ret = ra_set_pll_pms(pll_id, opp->pll_m, opp->pll_p, opp->pll_s);
+    if (ret)
+        return ret;
+
+    ret = ra_get_pll_pms(pll_id, &m, &p, &s);
+    if (ret)
+        return ret;
+
+    if (m != opp->pll_m || p != opp->pll_p || s != opp->pll_s) {
+        pr_err("G3D PMS readback mismatch: wanted M=%u P=%u S=%u got M=%u P=%u S=%u\n",
+               opp->pll_m, opp->pll_p, opp->pll_s, m, p, s);
+        return -EIO;
+    }
+
+    actual = ra_recalc_rate(pll_id) / 1000UL;
+    if (actual != rate) {
+        pr_err("G3D hardcoded rate mismatch: requested=%lu actual=%lu kHz\n",
+               rate, actual);
+        return -EIO;
+    }
+
+    return 0;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_set_pll_hardcoded);
+
+int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s)
+{
+    unsigned int pll_id = cal_g3d_pll_id();
+
+    if (pll_id == INVALID_CLK_ID)
+        return -ENODEV;
+
+    return ra_get_pll_pms(pll_id, m, p, s);
+}
+EXPORT_SYMBOL_GPL(cal_g3d_get_pll_pms);
 #endif
 
 unsigned long cal_dfs_get_max_freq(unsigned int id)
@@ -116,61 +232,19 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
     if (cal_is_exynos8895_g3d(id)) {
-        const struct exynos8895_g3d_hardcoded_opp *opp;
-        unsigned int pll_id;
-        unsigned long actual;
+        struct vclk *g3d_vclk;
 
-        opp = exynos8895_g3d_find_opp(rate);
-        if (!opp) {
-            pr_err("G3D hardcoded: %lu kHz is not in source table\n", rate);
-            return -EINVAL;
-        }
-
-        ret = cal_g3d_validate_rate_exact(rate);
-        if (ret) {
-            pr_err("G3D hardcoded: %lu kHz is not exactly synthesizable (%d)\n",
-                   rate, ret);
-            return ret;
-        }
-
-        /*
-         * 1) Park at a real Samsung FVMap OPP first. This lets ACPM/ASV
-         *    establish a valid rail voltage and a known-safe clock.
-         * 2) Apply the source-controlled margin.
-         * 3) Re-apply the anchor so the new margin is active.
-         * 4) Program PLL_G3D to the exact hardcoded target.
-         */
-        ret = exynos_acpm_set_rate(GET_IDX(id), opp->acpm_anchor_khz);
+        ret = cal_g3d_set_acpm_anchor(rate);
         if (ret)
             return ret;
 
-        ret = exynos_acpm_set_volt_margin(id, opp->volt_margin_uv);
+        ret = cal_g3d_set_pll_hardcoded(rate);
         if (ret)
             return ret;
 
-        ret = exynos_acpm_set_rate(GET_IDX(id), opp->acpm_anchor_khz);
-        if (ret)
-            return ret;
-
-        pll_id = cal_g3d_pll_id();
-        if (pll_id == INVALID_CLK_ID)
-            return -ENODEV;
-
-        /* ra_set_rate() expects Hz for a PLL and converts to kHz internally. */
-        ret = ra_set_rate(pll_id, rate * 1000UL);
-        if (ret)
-            return ret;
-
-        actual = ra_recalc_rate(pll_id) / 1000UL;
-        if (actual != rate) {
-            pr_err("G3D hardcoded verify failed: requested=%lu actual=%lu kHz\n",
-                   rate, actual);
-            return -EIO;
-        }
-
-        vclk = cmucal_get_node(id);
-        if (vclk)
-            vclk->vrate = rate;
+        g3d_vclk = cmucal_get_node(id);
+        if (g3d_vclk)
+            g3d_vclk->vrate = rate;
 
         return 0;
     }
@@ -274,65 +348,19 @@ unsigned long cal_clk_getrate(unsigned int id)
  */
 int cal_g3d_validate_rate_exact(unsigned long rate)
 {
-	unsigned int pll_id;
-	unsigned int fin;
-	struct cmucal_clk *clk;
-	struct cmucal_pll *pll;
-	struct cmucal_pll_table table;
-	int ret;
+    const struct exynos8895_g3d_hardcoded_opp *opp;
 
-	pll_id = cmucal_get_id("PLL_G3D");
-	if (pll_id == INVALID_CLK_ID)
-		return -ENODEV;
+    opp = exynos8895_g3d_find_opp(rate);
+    if (!opp)
+        return -EINVAL;
 
-	clk = cmucal_get_node(pll_id);
-	if (!clk || !IS_PLL(clk->id))
-		return -ENODEV;
-
-	pll = to_clk_pll(clk);
-	if (IS_FIXED_RATE(clk->pid))
-		fin = ra_get_value(clk->pid);
-	else
-		fin = FIN_HZ_26M;
-
-	ret = pll_find_table(pll, &table, fin, rate);
-	if (ret)
-		return ret;
-
-	/* Reject the nearest integer-N result: exact means exact in Hz. */
-	if (table.rate != khz_to_hz(rate))
-		return -ERANGE;
-
-	return 0;
+    return cal_g3d_validate_opp(opp);
 }
 EXPORT_SYMBOL_GPL(cal_g3d_validate_rate_exact);
 
 int cal_g3d_set_rate_exact(unsigned long rate)
 {
-	unsigned int pll_id;
-	unsigned long actual;
-	int ret;
-
-	ret = cal_g3d_validate_rate_exact(rate);
-	if (ret)
-		return ret;
-
-	pll_id = cmucal_get_id("PLL_G3D");
-	if (pll_id == INVALID_CLK_ID)
-		return -ENODEV;
-
-	ret = ra_set_rate(pll_id, rate * 1000UL);
-	if (ret)
-		return ret;
-
-	actual = ra_recalc_rate(pll_id) / 1000;
-	if (actual != rate) {
-		pr_err("G3D exact clock verify failed: requested=%lu actual=%lu kHz\n",
-		       rate, actual);
-		return -EIO;
-	}
-
-	return 0;
+    return cal_g3d_set_pll_hardcoded(rate);
 }
 EXPORT_SYMBOL_GPL(cal_g3d_set_rate_exact);
 

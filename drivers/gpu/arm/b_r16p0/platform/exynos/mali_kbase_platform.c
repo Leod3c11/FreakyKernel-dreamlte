@@ -352,9 +352,7 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 {
     struct exynos_context *platform = kbdev->platform_context;
-    struct dvfs_rate_volt rate_volt[DVFS_TABLE_ROW_MAX];
     unsigned int count = EXYNOS8895_G3D_OPP_COUNT;
-    int cal_count;
     unsigned int i;
 
     if (count > DVFS_TABLE_ROW_MAX) {
@@ -364,32 +362,20 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
         return -EINVAL;
     }
 
+    /*
+     * Do not build the GPU frequency list from ECT/FVMap.
+     * On this Exynos8895 the top stock OPPs may expose 0 uV through FVMap;
+     * frequency-table construction must remain independent from voltage data.
+     */
     memset(gpu_dvfs_table_default, 0, sizeof(gpu_dvfs_table_default));
-    memset(rate_volt, 0, sizeof(rate_volt));
-
-    cal_count = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id,
-                                           rate_volt);
-    if (cal_count != count) {
-        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                "G3D hardcoded CAL table mismatch: cal=%d source=%u\n",
-                cal_count, count);
-        return -EINVAL;
-    }
 
     for (i = 0; i < count; i++) {
         const struct exynos8895_g3d_hardcoded_opp *opp =
             &exynos8895_g3d_opp_table[i];
         gpu_dvfs_info *dst = &gpu_dvfs_table_default[i];
 
-        if (rate_volt[i].rate != opp->clock_khz) {
-            GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                    "G3D hardcoded order mismatch at %u: %d != %u\n",
-                    i, rate_volt[i].rate, opp->clock_khz);
-            return -EINVAL;
-        }
-
         dst->clock = opp->clock_khz;
-        dst->voltage = rate_volt[i].volt;
+        dst->voltage = opp->voltage_uv;
         dst->min_threshold = opp->min_threshold;
         dst->max_threshold = opp->max_threshold;
         dst->down_staycount = opp->down_staycount;
@@ -399,12 +385,13 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
                                 opp->cpu_big_max_freq : CPU_MAX;
 
         GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-                "G3D HARD OPP[%02u] %7u kHz anchor=%7u margin=%d voltage=%u uV\n",
-                i, opp->clock_khz, opp->acpm_anchor_khz,
-                opp->volt_margin_uv, dst->voltage);
+                "G3D HARD OPP[%02u] %7u kHz PMS=%u/%u/%u anchor=%7u voltage=%u uV\n",
+                i, opp->clock_khz,
+                opp->pll_m, opp->pll_p, opp->pll_s,
+                opp->acpm_anchor_khz, opp->voltage_uv);
     }
 
-    /* Source table, not DT/ECT, owns all GPU limits from this point on. */
+    /* The source table owns every DVFS limit from this point on. */
     platform->gpu_max_clock = exynos8895_g3d_opp_table[0].clock_khz;
     platform->gpu_max_clock_limit = platform->gpu_max_clock;
     platform->gpu_min_clock =
@@ -419,9 +406,7 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
         gpu_dvfs_update_table_size(i, count);
     }
 
-    if (TMU_LOCK_CLK_END ==
-        (sizeof(exynos8895_g3d_thermal_khz) /
-         sizeof(exynos8895_g3d_thermal_khz[0]))) {
+    if (TMU_LOCK_CLK_END == ARRAY_SIZE(exynos8895_g3d_thermal_khz)) {
         for (i = 0; i < TMU_LOCK_CLK_END; i++)
             platform->tmu_lock_clk[i] = exynos8895_g3d_thermal_khz[i];
     }

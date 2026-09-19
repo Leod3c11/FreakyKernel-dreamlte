@@ -99,6 +99,10 @@ extern unsigned int ra_recalc_rate(unsigned int id);
 extern unsigned int ra_get_value(unsigned int id);
 extern int ra_set_value(unsigned int id, unsigned int params);
 extern int ra_set_rate(unsigned int id, unsigned int rate);
+extern int ra_set_pll_pms(unsigned int id, unsigned int m,
+                          unsigned int p, unsigned int s);
+extern int ra_get_pll_pms(unsigned int id, unsigned int *m,
+                          unsigned int *p, unsigned int *s);
 extern int ra_set_enable(unsigned int id, unsigned int params);
 extern int ra_set_qch(unsigned int id, unsigned int en,
 		unsigned int req, unsigned int expire);

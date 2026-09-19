@@ -18,6 +18,7 @@
 #include <mali_kbase.h>
 
 #include <linux/fb.h>
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
 #include "exynos_tmu.h"
@@ -37,6 +38,9 @@
 #endif
 
 extern struct kbase_device *pkbdev;
+#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
+extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s);
+#endif
 
 int gpu_pmqos_dvfs_min_lock(int level)
 {
@@ -110,6 +114,43 @@ static ssize_t show_clock_exact(struct device *dev,
 		clock = gpu_get_cur_clock_exact(platform);
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", clock);
+}
+
+static ssize_t show_pll_pms(struct device *dev,
+                            struct device_attribute *attr, char *buf)
+{
+#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
+    unsigned int m = 0, p = 0, s = 0;
+    int ret;
+
+    ret = cal_g3d_get_pll_pms(&m, &p, &s);
+    if (ret)
+        return ret;
+
+    return snprintf(buf, PAGE_SIZE, "M=%u P=%u S=%u\n", m, p, s);
+#else
+    return snprintf(buf, PAGE_SIZE, "unsupported\n");
+#endif
+}
+
+static ssize_t show_hardcoded_table(struct device *dev,
+                                    struct device_attribute *attr, char *buf)
+{
+    ssize_t ret = 0;
+    unsigned int i;
+
+    for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT && ret < PAGE_SIZE - 1; i++) {
+        const struct exynos8895_g3d_hardcoded_opp *opp =
+            &exynos8895_g3d_opp_table[i];
+
+        ret += snprintf(buf + ret, PAGE_SIZE - ret,
+                        "%u kHz PMS=%u/%u/%u anchor=%u voltage=%u uV\n",
+                        opp->clock_khz,
+                        opp->pll_m, opp->pll_p, opp->pll_s,
+                        opp->acpm_anchor_khz, opp->voltage_uv);
+    }
+
+    return ret;
 }
 
 static ssize_t set_clock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -1467,6 +1508,8 @@ static ssize_t show_cl_boost_disable(struct device *dev, struct device_attribute
 DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
 DEVICE_ATTR(oc_clock, S_IWUSR, NULL, set_oc_clock);
 DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
+DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
+DEVICE_ATTR(hardcoded_table, S_IRUGO, show_hardcoded_table, NULL);
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
 DEVICE_ATTR(power_state, S_IRUGO, show_power_state, NULL);
 DEVICE_ATTR(asv_table, S_IRUGO, show_asv_table, NULL);
@@ -2033,6 +2076,16 @@ int gpu_create_sysfs_file(struct device *dev)
 
 	if (device_create_file(dev, &dev_attr_clock_exact)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_exact]\n");
+		goto out;
+	}
+
+	if (device_create_file(dev, &dev_attr_pll_pms)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
+		goto out;
+	}
+
+	if (device_create_file(dev, &dev_attr_hardcoded_table)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [hardcoded_table]\n");
 		goto out;
 	}
 
