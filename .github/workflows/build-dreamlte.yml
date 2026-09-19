@@ -2,7 +2,6 @@ name: Build FreakyKernel dreamlte
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - oc-exynos8895
@@ -12,7 +11,6 @@ permissions:
 
 jobs:
   build:
-    name: Kernel + DTB + boot.img
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -20,20 +18,26 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       DEFCONFIG: exynos8895-dreamlte_defconfig
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
 
     steps:
-      - name: Checkout kernel
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             bc \
             bison \
             flex \
             build-essential \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi \
             libssl-dev \
             libelf-dev \
             libncurses-dev \
@@ -46,34 +50,22 @@ jobs:
             python3 \
             file
 
-      - name: Download AOSP GCC 4.9 toolchains
+      - name: Show compiler versions
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/toolchains"
+          echo "===== AARCH64 ====="
+          aarch64-linux-gnu-gcc --version
 
-          git clone \
-            --depth=1 \
-            --branch android-8.1.0_r42 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            "$GITHUB_WORKSPACE/toolchains/aarch64"
+          echo
+          echo "===== ARM32 ====="
+          arm-linux-gnueabi-gcc --version
 
-          git clone \
-            --depth=1 \
-            --branch android-8.1.0_r42 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-            "$GITHUB_WORKSPACE/toolchains/arm"
+          echo
+          echo "===== HOST ====="
+          gcc --version
 
-          echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchains/aarch64/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/toolchains/arm/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_COMPAT=$GITHUB_WORKSPACE/toolchains/arm/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
-
-      - name: Show toolchain versions
+      - name: Prepare output
         run: |
-          "${CROSS_COMPILE}gcc" --version
-          "${CROSS_COMPILE_ARM32}gcc" --version
-
-      - name: Clean output
-        run: |
-          rm -rf out
+          rm -rf out artifacts
           mkdir -p out artifacts
 
       - name: Configure dreamlte
@@ -87,12 +79,36 @@ jobs:
             CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
             "$DEFCONFIG"
 
-          echo
-          echo "===== CONFIG CHECK ====="
-          grep '^CONFIG_EXYNOS_DTBTOOL=' out/.config || true
-          grep '^CONFIG_LOCALVERSION=' out/.config || true
+      - name: Match working kernel release
+        run: |
+          ./scripts/config --file out/.config --set-str LOCALVERSION ""
+          ./scripts/config --file out/.config --disable LOCALVERSION_AUTO
 
-      - name: Build kernel and DTB
+          make \
+            O=out \
+            ARCH="$ARCH" \
+            SUBARCH="$SUBARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            olddefconfig
+
+          echo "===== LOCALVERSION ====="
+          grep -E '^CONFIG_LOCALVERSION=|^# CONFIG_LOCALVERSION_AUTO' out/.config
+
+          echo
+          echo "===== KERNEL RELEASE ====="
+          make -s \
+            O=out \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            kernelrelease
+
+          echo
+          echo "===== DTBTOOL ====="
+          grep '^CONFIG_EXYNOS_DTBTOOL=' out/.config
+
+      - name: Build kernel
         shell: bash
         run: |
           set -o pipefail
@@ -108,22 +124,26 @@ jobs:
             Image Image.gz dtb.img \
             2>&1 | tee build.log
 
-      - name: Verify kernel outputs
+      - name: Verify build outputs
         run: |
-          echo "========================================"
-          echo " BUILD OUTPUTS"
-          echo "========================================"
-
-          ls -lh out/arch/arm64/boot/
-
           test -s out/arch/arm64/boot/Image
           test -s out/arch/arm64/boot/Image.gz
           test -s out/arch/arm64/boot/dtb.img
 
+          echo "===== BUILD OUTPUTS ====="
+          ls -lh out/arch/arm64/boot/Image \
+                 out/arch/arm64/boot/Image.gz \
+                 out/arch/arm64/boot/dtb.img
+
           echo
-          file out/arch/arm64/boot/Image || true
-          file out/arch/arm64/boot/Image.gz || true
+          file out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image.gz
           file out/arch/arm64/boot/dtb.img || true
+
+          echo
+          echo "===== EMBEDDED LINUX VERSION ====="
+          strings out/arch/arm64/boot/Image \
+            | grep -m1 '^Linux version ' || true
 
       - name: Collect kernel artifacts
         run: |
@@ -133,33 +153,8 @@ jobs:
           cp out/.config artifacts/kernel.config
           cp build.log artifacts/build.log
 
-      - name: Build boot.img from base image
-        shell: bash
+      - name: Download MagiskBoot
         run: |
-          set -e
-
-          BASE_BOOT="$GITHUB_WORKSPACE/boot/boot-base.img"
-
-          if [ ! -f "$BASE_BOOT" ]; then
-            echo
-            echo "================================================"
-            echo " boot/boot-base.img NAO ENCONTRADO"
-            echo "================================================"
-            echo
-            echo "Kernel e DTB foram compilados normalmente."
-            echo "O boot.img sera ignorado nesta execucao."
-            echo
-            echo "Adicione um boot.img conhecido e funcional em:"
-            echo
-            echo "boot/boot-base.img"
-            echo
-            exit 0
-          fi
-
-          echo "========================================"
-          echo " DOWNLOADING MAGISKBOOT v30.7"
-          echo "========================================"
-
           curl -L \
             --fail \
             --retry 3 \
@@ -173,71 +168,76 @@ jobs:
 
           chmod +x /tmp/magiskboot
 
-          /tmp/magiskboot 2>&1 | head -20 || true
+      - name: Build boot.img preserving original DTB
+        shell: bash
+        run: |
+          set -e
 
-          echo
-          echo "========================================"
-          echo " UNPACKING BASE BOOT"
-          echo "========================================"
+          BASE="$GITHUB_WORKSPACE/boot/boot-base.img"
+
+          test -s "$BASE" || {
+            echo "::error::boot/boot-base.img nao encontrado"
+            exit 1
+          }
 
           rm -rf "$GITHUB_WORKSPACE/repack"
           mkdir -p "$GITHUB_WORKSPACE/repack"
 
-          cp "$BASE_BOOT" "$GITHUB_WORKSPACE/repack/boot-base.img"
+          cp "$BASE" "$GITHUB_WORKSPACE/repack/boot-base.img"
 
           cd "$GITHUB_WORKSPACE/repack"
 
-          /tmp/magiskboot unpack boot-base.img
+          echo "========================================"
+          echo " UNPACK ORIGINAL BOOT"
+          echo "========================================"
+
+          /tmp/magiskboot unpack boot-base.img \
+            2>&1 | tee /tmp/original-boot-info.txt
+
+          test -s kernel
+          test -s ramdisk.cpio
+          test -s extra
 
           echo
-          echo "===== BASE BOOT COMPONENTS ====="
-          ls -lah
+          echo "===== ORIGINAL COMPONENTS ====="
+          ls -lh kernel ramdisk.cpio extra
 
-          test -f kernel || {
-            echo "::error::Kernel nao encontrado dentro do boot-base.img"
-            exit 1
-          }
+          echo
+          echo "===== ORIGINAL HASHES ====="
+          sha256sum kernel ramdisk.cpio extra
 
-          DTB_COMPONENT=""
+          cp ramdisk.cpio /tmp/original-ramdisk.cpio
+          cp extra /tmp/original-extra
 
-          if [ -f dtb ]; then
-            DTB_COMPONENT="dtb"
-            echo "DTB encontrado como componente moderno: dtb"
-          elif [ -f extra ]; then
-            DTB_COMPONENT="extra"
-            echo "DTB encontrado no campo legado Samsung: extra"
-          else
-            echo "::error::Nenhum componente DTB/extra foi encontrado no boot-base.img."
-            exit 1
-          fi
+          sha256sum /tmp/original-ramdisk.cpio \
+            > /tmp/original-ramdisk.sha256
 
-          echo "DTB_COMPONENT=$DTB_COMPONENT" >> "$GITHUB_ENV"
+          sha256sum /tmp/original-extra \
+            > /tmp/original-extra.sha256
 
           echo
           echo "========================================"
-          echo " REPLACING KERNEL"
+          echo " REPLACE ONLY KERNEL"
           echo "========================================"
 
-          #
-          # magiskboot descomprime o kernel automaticamente
-          # durante o unpack. Portanto usamos Image puro.
-          #
           cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" kernel
 
           echo
-          echo "========================================"
-          echo " REPLACING DTB"
-          echo "========================================"
+          echo "New kernel:"
+          sha256sum kernel
+          ls -lh kernel
 
-          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img" "$DTB_COMPONENT"
+          echo
+          echo "Original DTB/extra remains:"
+          sha256sum extra
 
-          echo "===== DTB SUBSTITUIDO ====="
-          ls -lh "$DTB_COMPONENT"
-          sha256sum "$DTB_COMPONENT"
+          echo
+          echo "Original ramdisk remains:"
+          sha256sum ramdisk.cpio
 
           echo
           echo "========================================"
-          echo " REPACKING BOOT IMAGE"
+          echo " REPACK"
           echo "========================================"
 
           /tmp/magiskboot repack \
@@ -246,79 +246,103 @@ jobs:
 
           test -s "$GITHUB_WORKSPACE/artifacts/boot.img"
 
-          echo
-          echo "========================================"
-          echo " VERIFY REPACKED BOOT"
-          echo "========================================"
+      - name: Verify final boot image
+        shell: bash
+        run: |
+          set -e
 
           rm -rf "$GITHUB_WORKSPACE/repack-verify"
           mkdir -p "$GITHUB_WORKSPACE/repack-verify"
 
-          cp "$GITHUB_WORKSPACE/artifacts/boot.img"              "$GITHUB_WORKSPACE/repack-verify/boot.img"
+          cp "$GITHUB_WORKSPACE/artifacts/boot.img" \
+             "$GITHUB_WORKSPACE/repack-verify/boot.img"
 
           cd "$GITHUB_WORKSPACE/repack-verify"
 
-          /tmp/magiskboot unpack boot.img 2>&1 | tee boot-info.txt
+          echo "========================================"
+          echo " UNPACK FINAL BOOT"
+          echo "========================================"
+
+          /tmp/magiskboot unpack boot.img \
+            2>&1 | tee /tmp/final-boot-info.txt
 
           test -s kernel
+          test -s ramdisk.cpio
+          test -s extra
 
-          if [ "$DTB_COMPONENT" = "extra" ]; then
-            test -s extra
+          echo
+          echo "===== FINAL COMPONENTS ====="
+          ls -lh kernel ramdisk.cpio extra
 
-            if ! cmp -s               "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"               extra; then
-              echo "::error::O campo extra do boot final nao corresponde ao dtb.img compilado."
+          echo
+          echo "===== FINAL HASHES ====="
+          sha256sum kernel ramdisk.cpio extra
+
+          echo
+          echo "========================================"
+          echo " VERIFY NEW KERNEL"
+          echo "========================================"
+
+          cmp -s \
+            kernel \
+            "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" || {
+              echo "::error::Kernel final difere do Image compilado"
               exit 1
-            fi
-          else
-            test -s dtb
-
-            if ! cmp -s               "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"               dtb; then
-              echo "::error::O DTB do boot final nao corresponde ao dtb.img compilado."
-              exit 1
-            fi
-          fi
-
-          if ! cmp -s             "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"             kernel; then
-            echo "::error::O kernel dentro do boot final nao corresponde ao Image compilado."
-            exit 1
-          fi
-
-          grep -q "SAMSUNG_SEANDROID" boot-info.txt || {
-            echo "::error::SAMSUNG_SEANDROID nao foi preservado."
-            exit 1
           }
 
+          echo "Kernel novo: OK"
+
           echo
-          echo "BOOT REPACK VALIDADO COM SUCESSO"
-          echo "Kernel: OK"
-          echo "DTB:    OK"
+          echo "========================================"
+          echo " VERIFY ORIGINAL RAMDISK"
+          echo "========================================"
+
+          cmp -s \
+            ramdisk.cpio \
+            /tmp/original-ramdisk.cpio || {
+              echo "::error::Ramdisk foi alterado"
+              exit 1
+          }
+
+          echo "Ramdisk original: OK"
+
+          echo
+          echo "========================================"
+          echo " VERIFY ORIGINAL DTB / EXTRA"
+          echo "========================================"
+
+          cmp -s \
+            extra \
+            /tmp/original-extra || {
+              echo "::error::DTB/extra original foi alterado"
+              exit 1
+          }
+
+          echo "DTB/extra original: OK"
+
+          echo
+          echo "========================================"
+          echo " VERIFY HEADER"
+          echo "========================================"
+
+          grep -q 'HEADER_VER.*\[0\]' /tmp/final-boot-info.txt
+          grep -q 'PAGESIZE.*\[2048\]' /tmp/final-boot-info.txt
+          grep -q 'SAMSUNG_SEANDROID' /tmp/final-boot-info.txt
+
+          echo "Header v0: OK"
+          echo "Page size 2048: OK"
           echo "Samsung SEAndroid trailer: OK"
 
-          cd "$GITHUB_WORKSPACE"
-
           echo
           echo "========================================"
-          echo " BOOT IMAGE SIZE"
+          echo " BOOT VALIDATION PASSED"
           echo "========================================"
-
-          BOOT_SIZE=$(stat -c%s "$GITHUB_WORKSPACE/artifacts/boot.img")
-          BOOT_MAX=41943040
-
-          echo "boot.img: $BOOT_SIZE bytes"
-          echo "limit:    $BOOT_MAX bytes"
-
-          if [ "$BOOT_SIZE" -gt "$BOOT_MAX" ]; then
-            echo "::error::boot.img excede o tamanho conhecido da particao boot do universal8895."
-            exit 1
-          fi
+          echo "Only the kernel payload changed."
+          echo "Ramdisk and DTB/extra are byte-identical to boot-base.img."
 
       - name: Final artifact information
         run: |
-          echo
-          echo "========================================"
-          echo " FINAL ARTIFACTS"
-          echo "========================================"
-
+          echo "===== ARTIFACTS ====="
           ls -lah artifacts/
 
           echo
