@@ -88,10 +88,12 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 {
 	int ret = 0, target_clk = 0;
 	int prev_clk = 0;
+	int prev_step;
 	struct kbase_device *kbdev = pkbdev;
 	struct exynos_context *platform = (struct exynos_context *) kbdev->platform_context;
 
 	DVFS_ASSERT(platform);
+	prev_step = platform->step;
 
 	if (!gpu_control_is_power_on(pkbdev)) {
 		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: can't set clock and voltage in the power-off state!\n", __func__);
@@ -142,7 +144,15 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 #endif
 
 #ifdef CONFIG_MALI_DVFS
-	gpu_control_set_dvfs(kbdev, target_clk);
+	ret = gpu_control_set_dvfs(kbdev, target_clk);
+	if (ret) {
+		platform->step = prev_step;
+		mutex_unlock(&platform->gpu_clock_lock);
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"%s: hardware transition to %d kHz failed (%d)\n",
+			__func__, target_clk, ret);
+		return ret;
+	}
 #endif
 	ret = gpu_update_cur_level(platform);
 

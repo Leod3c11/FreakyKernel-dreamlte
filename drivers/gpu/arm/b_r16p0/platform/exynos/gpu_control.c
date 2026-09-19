@@ -49,6 +49,15 @@ extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s
 
 static bool gpu_exact_clock_active;
 static struct regulator *g3d_hardcoded_regulator;
+static struct gpu_hardcoded_status g3d_hardcoded_status;
+
+void gpu_get_hardcoded_status(struct gpu_hardcoded_status *status)
+{
+	if (!status)
+		return;
+
+	*status = g3d_hardcoded_status;
+}
 #ifdef CONFIG_OF
 #include <linux/of.h>
 #endif
@@ -393,13 +402,18 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
     }
 #endif /* CONFIG_MALI_RT_PM */
 
-    if (clk == platform->cur_clock) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+    if (clk == platform->cur_clock &&
+        (int)cal_g3d_get_rate_exact() == clk) {
         ret = 0;
-        GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
-                "%s: skipped to set clock for %d kHz!\n",
-                __func__, platform->cur_clock);
         goto err;
     }
+#else
+    if (clk == platform->cur_clock) {
+        ret = 0;
+        goto err;
+    }
+#endif
 
 #ifdef CONFIG_DEBUG_SNAPSHOT_FREQ
     if (platform->gpu_dss_freq_id)
@@ -417,38 +431,54 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
         const struct exynos8895_g3d_hardcoded_opp *opp;
 
         opp = exynos8895_g3d_find_opp(clk);
+        g3d_hardcoded_status.requested_clock_khz = clk;
+        g3d_hardcoded_status.actual_clock_khz =
+            (int)cal_g3d_get_rate_exact();
+        g3d_hardcoded_status.last_stage = 1;
+        g3d_hardcoded_status.last_error = 0;
+
         if (!opp) {
             ret = -EINVAL;
             goto err;
         }
 
-        /*
-         * ACPM first moves the domain to a known Samsung OPP.  The source
-         * table then optionally owns vdd_g3d and finally owns PLL_G3D PMS.
-         *
-         * If the requested clock is above its anchor, voltage is applied
-         * before raising PLL_G3D.  If it is below the anchor, voltage is
-         * applied after lowering PLL_G3D.
-         */
+        g3d_hardcoded_status.anchor_clock_khz = opp->acpm_anchor_khz;
+        g3d_hardcoded_status.target_voltage_uv = opp->voltage_uv;
+
         ret = cal_g3d_set_acpm_anchor(clk);
         if (ret)
             goto err;
+        g3d_hardcoded_status.last_stage = 2;
+        g3d_hardcoded_status.actual_voltage_uv =
+            gpu_get_cur_voltage(platform);
 
         if (opp->voltage_uv && opp->clock_khz >= opp->acpm_anchor_khz) {
             ret = gpu_set_hardcoded_voltage(platform, opp->voltage_uv);
             if (ret)
                 goto err;
+            g3d_hardcoded_status.last_stage = 3;
         }
 
         ret = cal_g3d_set_pll_hardcoded(clk);
         if (ret)
             goto err;
+        g3d_hardcoded_status.last_stage = 4;
+
+        g3d_hardcoded_status.actual_clock_khz =
+            (int)cal_g3d_get_rate_exact();
+        cal_g3d_get_pll_pms(&g3d_hardcoded_status.pll_m,
+                            &g3d_hardcoded_status.pll_p,
+                            &g3d_hardcoded_status.pll_s);
 
         if (opp->voltage_uv && opp->clock_khz < opp->acpm_anchor_khz) {
             ret = gpu_set_hardcoded_voltage(platform, opp->voltage_uv);
             if (ret)
                 goto err;
+            g3d_hardcoded_status.last_stage = 5;
         }
+
+        g3d_hardcoded_status.actual_voltage_uv =
+            gpu_get_cur_voltage(platform);
     }
 #else
     ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id, clk);
@@ -467,7 +497,14 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 #endif
 #endif
 
+#if defined(CONFIG_SOC_EXYNOS8895)
+    platform->cur_clock = (int)cal_g3d_get_rate_exact();
+    g3d_hardcoded_status.actual_clock_khz = platform->cur_clock;
+    g3d_hardcoded_status.actual_voltage_uv = gpu_get_cur_voltage(platform);
+    g3d_hardcoded_status.last_stage = 6;
+#else
     platform->cur_clock = cal_dfs_get_rate(platform->g3d_cmu_cal_id);
+#endif
     if (platform->cur_clock != clk) {
         GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
                 "G3D hardcoded clock verify failed requested=%d actual=%d kHz\n",
@@ -482,10 +519,18 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 
 #ifdef CONFIG_MALI_RT_PM
 err:
+#if defined(CONFIG_SOC_EXYNOS8895)
+    if (ret)
+        g3d_hardcoded_status.last_error = ret;
+#endif
     if (platform->exynos_pm_domain)
         mutex_unlock(&platform->exynos_pm_domain->access_lock);
 #else
 err:
+#if defined(CONFIG_SOC_EXYNOS8895)
+    if (ret)
+        g3d_hardcoded_status.last_error = ret;
+#endif
 #endif /* CONFIG_MALI_RT_PM */
     return ret;
 }
@@ -935,13 +980,15 @@ int gpu_control_module_init(struct kbase_device *kbdev)
 
 #ifdef CONFIG_REGULATOR
 	if (!g3d_hardcoded_regulator) {
-		g3d_hardcoded_regulator = regulator_get(NULL, "vdd_g3d");
+		g3d_hardcoded_regulator = regulator_get(kbdev->dev, "vdd_g3d");
 		if (IS_ERR(g3d_hardcoded_regulator)) {
 			GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
 				"G3D hardcoded: vdd_g3d regulator unavailable (%ld); voltage override disabled\n",
 				PTR_ERR(g3d_hardcoded_regulator));
 			g3d_hardcoded_regulator = NULL;
+			g3d_hardcoded_status.regulator_ready = 0;
 		} else {
+			g3d_hardcoded_status.regulator_ready = 1;
 			GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
 				"G3D hardcoded: vdd_g3d regulator acquired, current=%d uV\n",
 				regulator_get_voltage(g3d_hardcoded_regulator));

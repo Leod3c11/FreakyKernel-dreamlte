@@ -293,6 +293,11 @@ static int pm_callback_dvfs_on(struct kbase_device *kbdev)
 static int pm_callback_runtime_on(struct kbase_device *kbdev)
 {
 	struct exynos_context *platform = (struct exynos_context *) kbdev->platform_context;
+#if defined(CONFIG_MALI_DVFS) && defined(CONFIG_SOC_EXYNOS8895)
+	int restore_clk;
+	int restore_ret;
+#endif
+
 	if (!platform)
 		return -ENODEV;
 
@@ -303,6 +308,20 @@ static int pm_callback_runtime_on(struct kbase_device *kbdev)
 #endif
 	gpu_dvfs_start_env_data_gathering(kbdev);
 	platform->power_status = true;
+
+#if defined(CONFIG_MALI_DVFS) && defined(CONFIG_SOC_EXYNOS8895)
+	/* Re-apply source-defined PMS after the G3D power domain returns. */
+	if (platform->dvfs_status && platform->step >= 0 &&
+	    platform->step < platform->table_size) {
+		restore_clk = platform->table[platform->step].clock;
+		restore_ret = gpu_set_target_clk_vol(restore_clk, false);
+
+		if (restore_ret)
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"runtime-on hardcoded G3D restore %d kHz failed (%d)\n",
+				restore_clk, restore_ret);
+	}
+#endif
 #if 0
 #ifdef CONFIG_MALI_DVFS
 #ifdef CONFIG_MALI_SEC_CL_BOOST
