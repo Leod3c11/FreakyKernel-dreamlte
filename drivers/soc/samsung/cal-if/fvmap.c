@@ -5,6 +5,9 @@
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
 #include <soc/samsung/cal-if.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
+#endif
 
 #include "fvmap.h"
 #include "cmucal.h"
@@ -109,6 +112,63 @@ static int __init get_cp_volt(char *str)
 	return 0;
 }
 early_param("cp", get_cp_volt);
+
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+static void fvmap_override_exynos8895_g3d(void __iomem *sram_base)
+{
+	struct fvmap_header *header = sram_base;
+	struct rate_volt_header *rv;
+	struct clocks *clks;
+	struct pll_header *pll = NULL;
+	unsigned int idx = EXYNOS8895_G3D_ACPM_INDEX;
+	unsigned int i;
+
+	if (!sram_base)
+		return;
+
+	if (header[idx].num_of_lv != EXYNOS8895_G3D_OPP_COUNT) {
+		pr_err("G3D FVMap: firmware has %u levels, source expects %u; refusing override\n",
+		       header[idx].num_of_lv, EXYNOS8895_G3D_OPP_COUNT);
+		return;
+	}
+
+	rv = sram_base + header[idx].o_ratevolt;
+
+	if (header[idx].num_of_pll > 0) {
+		clks = sram_base + header[idx].o_members;
+		pll = sram_base + clks->addr[0];
+	}
+
+	pr_info("G3D FVMap: ACPM idx=%u levels=%u pll=%u ratevolt=0x%x members=0x%x\n",
+		idx, header[idx].num_of_lv, header[idx].num_of_pll,
+		header[idx].o_ratevolt, header[idx].o_members);
+
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
+		const struct exynos8895_g3d_hardcoded_opp *opp =
+			&exynos8895_g3d_opp_table[i];
+		unsigned int old_rate = rv->table[i].rate;
+		unsigned int old_volt = rv->table[i].volt;
+		unsigned int old_pms = pll ? pll->pms[i] : 0;
+		unsigned int desired_pms = EXYNOS8895_G3D_PACK_PMS(
+			opp->pll_m, opp->pll_p, opp->pll_s);
+
+		/* Existing slot only: never move FVMap offsets or increase num_of_lv. */
+		rv->table[i].rate = opp->clock_khz;
+		if (opp->voltage_uv)
+			rv->table[i].volt = opp->voltage_uv;
+
+		if (pll && opp->override_pms)
+			pll->pms[i] = desired_pms;
+
+		pr_info("G3D FVMap[%u]: rate %u->%u kHz volt %u->%u uV PMSraw=0x%08x desired=%u/%u/%u packed=0x%08x override=%u\n",
+			i, old_rate, rv->table[i].rate,
+			old_volt, rv->table[i].volt,
+			old_pms, opp->pll_m, opp->pll_p, opp->pll_s,
+			desired_pms, opp->override_pms);
+	}
+}
+#endif
 
 int fvmap_set_raw_voltage_table(unsigned int id, int uV)
 {
@@ -280,6 +340,9 @@ int fvmap_init(void __iomem *sram_base)
 	fvmap_base = map_base;
 	sram_fvmap_base = sram_base;
 	pr_info("%s:fvmap initialize %pK\n", __func__, sram_base);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	fvmap_override_exynos8895_g3d(sram_base);
+#endif
 	fvmap_copy_from_sram(map_base, sram_base);
 
 	if (IS_ENABLED(CONFIG_VDD_AUTO_CAL))

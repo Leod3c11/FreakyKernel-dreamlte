@@ -2,6 +2,9 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <soc/samsung/ect_parser.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
+#endif
 
 #include "cmucal.h"
 #include "vclk.h"
@@ -461,7 +464,13 @@ static int vclk_get_dfs_info(struct vclk *vclk)
 	}
 
 	for (i = 0; i < vclk->num_rates; i++) {
-		vclk->lut[i].rate = dvfs_domain->list_level[i].level;
+#if defined(CONFIG_SOC_EXYNOS8895)
+		if (!strcmp(vclk->name, "dvfs_g3d") &&
+		    vclk->num_rates == EXYNOS8895_G3D_OPP_COUNT)
+			vclk->lut[i].rate = exynos8895_g3d_opp_table[i].clock_khz;
+		else
+#endif
+			vclk->lut[i].rate = dvfs_domain->list_level[i].level;
 		params = kcalloc(vclk->num_list, sizeof(int), GFP_KERNEL);
 		if (!params) {
 			ret = -EVCLKNOMEM;
@@ -478,6 +487,20 @@ static int vclk_get_dfs_info(struct vclk *vclk)
 		}
 		vclk->lut[i].params = params;
 	}
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (!strcmp(vclk->name, "dvfs_g3d")) {
+		if (vclk->num_rates != EXYNOS8895_G3D_OPP_COUNT) {
+			pr_err("G3D hardcoded: ECT has %u levels, source expects %u; rates not expanded\n",
+			       vclk->num_rates, EXYNOS8895_G3D_OPP_COUNT);
+		} else {
+			vclk->max_freq = exynos8895_g3d_opp_table[0].clock_khz;
+			vclk->min_freq = exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
+			pr_info("G3D hardcoded: CAL rate table owns %u existing ACPM slots (%u..%u kHz)\n",
+				EXYNOS8895_G3D_OPP_COUNT, vclk->max_freq, vclk->min_freq);
+		}
+	}
+#endif
 
 	if (dvfs_domain->boot_level_idx != -1)
 		vclk->boot_freq = vclk->lut[dvfs_domain->boot_level_idx].rate;

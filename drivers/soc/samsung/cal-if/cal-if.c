@@ -2,6 +2,9 @@
 #include <linux/exynos-ss.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
+#endif
 
 #include "pwrcal-env.h"
 #include "pwrcal-rae.h"
@@ -90,6 +93,12 @@ unsigned long cal_dfs_cached_get_rate(unsigned int id)
 unsigned long cal_dfs_get_rate(unsigned int id)
 {
 	int ret;
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (IS_ACPM_VCLK(id) &&
+	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
+		return exynos_acpm_get_rate(EXYNOS8895_G3D_ACPM_INDEX);
+#endif
 
 	ret = vclk_recalc_rate(id);
 
