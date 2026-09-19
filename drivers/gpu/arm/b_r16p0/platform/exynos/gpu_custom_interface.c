@@ -16,6 +16,10 @@
  */
 
 #include <mali_kbase.h>
+#include <linux/pm_qos.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-hardcoded-profile.h>
+#endif
 #include <mali_kbase_pm.h>
 
 #include <linux/fb.h>
@@ -104,6 +108,49 @@ static ssize_t show_clock(struct device *dev, struct device_attribute *attr, cha
 	return ret;
 }
 
+#if defined(CONFIG_SOC_EXYNOS8895) && defined(CONFIG_MALI_PM_QOS)
+static struct pm_qos_request exynos8895_hc_manual_mif_qos;
+
+static int exynos8895_hc_manual_mif_qos_set(struct exynos_context *platform)
+{
+    const struct exynos8895_g3d_hardcoded_opp *opp;
+    unsigned int clock;
+    unsigned int mif;
+
+    if (!platform)
+        return -ENODEV;
+
+    clock = platform->cur_clock;
+    if (platform->step >= 0 && platform->step < platform->table_size)
+        clock = platform->table[platform->step].clock;
+
+    opp = exynos8895_hc_find_g3d(clock);
+    mif = opp ? opp->mem_freq :
+        ((platform->step >= 0 && platform->step < platform->table_size) ?
+         platform->table[platform->step].mem_freq : 0);
+
+    if (!mif)
+        return -EINVAL;
+
+    if (!pm_qos_request_active(&exynos8895_hc_manual_mif_qos))
+        pm_qos_add_request(&exynos8895_hc_manual_mif_qos,
+                           PM_QOS_BUS_THROUGHPUT, mif);
+    else
+        pm_qos_update_request(&exynos8895_hc_manual_mif_qos, mif);
+
+    GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+            "Exynos8895 HC manual QoS: G3D=%u MIF_MIN=%u\n",
+            clock, mif);
+    return 0;
+}
+
+static void exynos8895_hc_manual_mif_qos_remove(void)
+{
+    if (pm_qos_request_active(&exynos8895_hc_manual_mif_qos))
+        pm_qos_remove_request(&exynos8895_hc_manual_mif_qos);
+}
+#endif
+
 static ssize_t set_clock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	unsigned int clk = 0;
@@ -145,7 +192,11 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 #ifdef CONFIG_MALI_DVFS
 #ifdef CONFIG_MALI_PM_QOS
 		if (manual_pmqos_init) {
+			#if defined(CONFIG_SOC_EXYNOS8895)
+			exynos8895_hc_manual_mif_qos_remove();
+#else
 			gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_DEINIT);
+#endif
 			manual_pmqos_init = false;
 		}
 #endif
@@ -207,12 +258,6 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 			goto manual_fail;
 		}
 #ifdef CONFIG_MALI_PM_QOS
-		ret = gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_INIT);
-		if (ret) {
-			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"G3D DIAG: PM QoS init failed (%d)\n", ret);
-			goto manual_fail;
-		}
 		manual_pmqos_init = true;
 #endif
 	}
@@ -226,8 +271,15 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	}
 	platform->step = ret;
 #ifdef CONFIG_MALI_PM_QOS
-	if (manual_pmqos_init)
+	if (manual_pmqos_init) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+		ret = exynos8895_hc_manual_mif_qos_set(platform);
+		if (ret)
+			goto manual_fail;
+#else
 		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_SET);
+#endif
+	}
 #endif
 	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
 		"G3D DIAG pre-transition: request=%u step=%d mif=%d cur=%d power=%d\n",
@@ -294,6 +346,47 @@ static ssize_t show_clock_exact(struct device *dev, struct device_attribute *att
 static ssize_t show_clock_core(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_core_rate_exact());
+}
+
+static ssize_t show_soc_profile(struct device *dev,
+        struct device_attribute *attr, char *buf)
+{
+    ssize_t ret = 0;
+    unsigned int i;
+
+    ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+        "EXYNOS8895_HARDCODED_PROFILE version=%u\n",
+        EXYNOS8895_HC_PROFILE_VERSION);
+
+    ret += scnprintf(buf + ret, PAGE_SIZE - ret, "DOMAINS\n");
+    for (i = 0; i < EXYNOS8895_HC_DOMAIN_COUNT && ret < PAGE_SIZE; i++)
+        ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+            "%u %s acpm=%u owner=%s\n",
+            i, exynos8895_hc_domains[i].name,
+            exynos8895_hc_domains[i].acpm_index,
+            exynos8895_hc_domains[i].owner == EXYNOS8895_HC_OWNER_HARDCODED ?
+            "hardcoded" : "acpm");
+
+    ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+        "G3D clock key uV M P S MIF INT\n");
+    for (i = 0; i < EXYNOS8895_HC_G3D_OPP_COUNT && ret < PAGE_SIZE; i++) {
+        const struct exynos8895_g3d_hardcoded_opp *opp =
+            &exynos8895_g3d_opp_table[i];
+        ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+            "%u %u %u %u %u %u %u %u\n",
+            opp->clock_khz, opp->acpm_key_khz, opp->voltage_uv,
+            opp->pll_m, opp->pll_p, opp->pll_s,
+            opp->mem_freq, opp->int_min_freq);
+    }
+
+    ret += scnprintf(buf + ret, PAGE_SIZE - ret, "MIF clock uV\n");
+    for (i = 0; i < EXYNOS8895_HC_MIF_OPP_COUNT && ret < PAGE_SIZE; i++)
+        ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+            "%u %u\n",
+            exynos8895_hc_mif_opps[i].clock_khz,
+            exynos8895_hc_mif_opps[i].voltage_uv);
+
+    return ret;
 }
 
 static ssize_t show_g3d_diag(struct device *dev,
@@ -1557,6 +1650,7 @@ DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
 DEVICE_ATTR(clock_core, S_IRUGO, show_clock_core, NULL);
 DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
 DEVICE_ATTR(g3d_diag, S_IRUGO, show_g3d_diag, NULL);
+DEVICE_ATTR(soc_profile, S_IRUGO, show_soc_profile, NULL);
 DEVICE_ATTR(g3d_sram, S_IRUGO, show_g3d_sram, NULL);
 #endif
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
@@ -2130,6 +2224,12 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
 		goto out;
 	}
+#if defined(CONFIG_SOC_EXYNOS8895)
+    if (device_create_file(dev, &dev_attr_soc_profile)) {
+        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+                "couldn't create sysfs file [soc_profile]\n");
+    }
+#endif
 	if (device_create_file(dev, &dev_attr_g3d_diag)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [g3d_diag]\n");
 		goto out;
@@ -2327,6 +2427,9 @@ void gpu_remove_sysfs_file(struct device *dev)
 	device_remove_file(dev, &dev_attr_clock_core);
 	device_remove_file(dev, &dev_attr_pll_pms);
 	device_remove_file(dev, &dev_attr_g3d_diag);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	device_remove_file(dev, &dev_attr_soc_profile);
+#endif
 	device_remove_file(dev, &dev_attr_g3d_sram);
 #endif
 	device_remove_file(dev, &dev_attr_vol);

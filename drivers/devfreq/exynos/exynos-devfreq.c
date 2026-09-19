@@ -31,6 +31,9 @@
 #include <soc/samsung/exynos-devfreq.h>
 #include <soc/samsung/tmu.h>
 #include <soc/samsung/ect_parser.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-hardcoded-profile.h>
+#endif
 #include <soc/samsung/exynos-dm.h>
 #include "../../soc/samsung/acpm/acpm.h"
 #include "../../soc/samsung/acpm/acpm_ipc.h"
@@ -789,10 +792,66 @@ struct device *find_exynos_devfreq_device(enum exynos_dm_type dm_type)
 }
 #endif
 
+#if defined(CONFIG_SOC_EXYNOS8895)
+static int exynos8895_hc_fill_devfreq_table(struct exynos_devfreq_data *data,
+                                            const char *name)
+{
+    const struct exynos8895_hc_simple_opp *table;
+    unsigned int count;
+    unsigned int i;
+
+    if (exynos8895_hc_get_devfreq_table(name, &table, &count))
+        return -ENOENT;
+
+    if (!count || count > ARRAY_SIZE(data->opp_list))
+        return -EINVAL;
+
+    data->max_state = count;
+    for (i = 0; i < count; i++) {
+        data->opp_list[i].idx = i;
+        data->opp_list[i].freq = table[i].clock_khz;
+        data->opp_list[i].volt = table[i].voltage_uv;
+    }
+
+    return 0;
+}
+
+static int exynos8895_hc_fill_devfreq_by_type(struct exynos_devfreq_data *data)
+{
+    switch (data->devfreq_type) {
+    case DEVFREQ_MIF:
+        return exynos8895_hc_fill_devfreq_table(data, "dvfs_mif");
+    case DEVFREQ_INT:
+        return exynos8895_hc_fill_devfreq_table(data, "dvfs_int");
+    case DEVFREQ_INTCAM:
+        return exynos8895_hc_fill_devfreq_table(data, "dvfs_intcam");
+    case DEVFREQ_DISP:
+        return exynos8895_hc_fill_devfreq_table(data, "dvfs_disp");
+    case DEVFREQ_CAM:
+        return exynos8895_hc_fill_devfreq_table(data, "dvfs_cam");
+    default:
+        return -ENOENT;
+    }
+}
+
+static bool exynos8895_hc_owns_devfreq(struct exynos_devfreq_data *data)
+{
+    return exynos8895_hc_fill_devfreq_by_type(data) == 0;
+}
+#endif
+
 #ifdef CONFIG_OF
 #if defined(CONFIG_ECT)
 static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char *dvfs_domain_name)
 {
+#if defined(CONFIG_SOC_EXYNOS8895)
+    if (!exynos8895_hc_fill_devfreq_table(data, dvfs_domain_name)) {
+        dev_info(data->dev,
+                 "Exynos8895 HC: %s source table owns %u OPPs\n",
+                 dvfs_domain_name, data->max_state);
+        return 0;
+    }
+#endif
 	int i;
 	void *dvfs_block;
 	struct ect_dvfs_domain *dvfs_domain;
@@ -906,6 +965,19 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	data->min_freq = freq_array[3];
 	data->max_freq = freq_array[4];
 	data->reboot_freq = freq_array[5];
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (data->devfreq_type == DEVFREQ_MIF) {
+	    data->devfreq_profile.initial_freq = EXYNOS8895_HC_MIF_INITIAL_KHZ;
+	    data->default_qos = EXYNOS8895_HC_MIF_DEFAULT_KHZ;
+	    data->devfreq_profile.suspend_freq = EXYNOS8895_HC_MIF_SUSPEND_KHZ;
+	    data->min_freq = EXYNOS8895_HC_MIF_MIN_KHZ;
+	    data->max_freq = EXYNOS8895_HC_MIF_MAX_KHZ;
+	    data->reboot_freq = EXYNOS8895_HC_MIF_REBOOT_KHZ;
+	    dev_info(data->dev,
+	             "Exynos8895 HC: MIF policy owns freq_info min=%u max=%u\n",
+	             data->min_freq, data->max_freq);
+	}
+#endif
 
 	if (of_property_read_u32_array(np, "boot_info", (u32 *)&boot_array,
 				       (size_t)(ARRAY_SIZE(boot_array)))) {
@@ -1356,12 +1428,22 @@ static int exynos_init_freq_table(struct exynos_devfreq_data *data)
 
 	/* volt_table should be filled (data->volt_table) */
 	if (data->ops.get_volt_table) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+        if (!exynos8895_hc_owns_devfreq(data)) {
+#endif
+
 		ret = data->ops.get_volt_table(data->dev, data->max_state, data->opp_list);
 		if (ret) {
 			dev_err(data->dev, "failed get voltage table\n");
 			return ret;
 		}
-	}
+	#if defined(CONFIG_SOC_EXYNOS8895)
+        } else {
+            dev_info(data->dev,
+                     "Exynos8895 HC profile already owns rate/volt metadata\n");
+        }
+#endif
+    }
 
 	for (i = 0; i < data->max_state; i++) {
 		freq = data->opp_list[i].freq;
@@ -2064,6 +2146,24 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 			goto err_init_prepare;
 		}
 	}
+#if defined(CONFIG_SOC_EXYNOS8895)
+    /*
+     * Reassert source OPPs after init_prepare: Samsung init may mask levels
+     * according to the firmware ASV view.  The hardcoded profile is the
+     * authority for domains it owns.
+     */
+    if (!exynos8895_hc_fill_devfreq_by_type(data)) {
+        data->devfreq_profile.max_state = data->max_state;
+        if (data->devfreq_type == DEVFREQ_MIF) {
+            data->min_freq = EXYNOS8895_HC_MIF_MIN_KHZ;
+            data->max_freq = EXYNOS8895_HC_MIF_MAX_KHZ;
+        }
+        dev_info(data->dev,
+                 "Exynos8895 HC: reassert source OPPs after init_prepare (%u levels)\n",
+                 data->max_state);
+    }
+#endif
+
 
 	data->devfreq_profile.freq_table = kzalloc(sizeof(int) * data->max_state, GFP_KERNEL);
 	if (data->devfreq_profile.freq_table == NULL) {
