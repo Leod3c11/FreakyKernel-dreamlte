@@ -88,6 +88,19 @@ static const unsigned int exynos8895_g3d_tmu_khz[EXYNOS8895_G3D_TMU_COUNT] = {
 	850000, 800000, 700000, 572000, 455000, 385000, 260000,
 };
 
+static inline const struct exynos8895_g3d_hardcoded_opp *
+exynos8895_g3d_find_opp(unsigned long clock_khz)
+{
+	unsigned int i;
+
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
+		if (exynos8895_g3d_opp_table[i].clock_khz == clock_khz)
+			return &exynos8895_g3d_opp_table[i];
+
+	return NULL;
+}
+
+int exynos8895_g3d_hardcoded_apply(void);
 bool exynos8895_g3d_hardcoded_active(void);
 bool exynos8895_g3d_hardcoded_sync_cal(void);
 

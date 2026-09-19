@@ -360,29 +360,28 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 	int i;
 
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (exynos8895_g3d_hardcoded_active()) {
-		cal_table_size = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id,
-						     g3d_rate_volt);
-		if (cal_table_size != EXYNOS8895_G3D_OPP_COUNT) {
-			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"G3D hardcoded: CAL/FVMap has %d levels, expected %u\n",
-				cal_table_size, EXYNOS8895_G3D_OPP_COUNT);
-			return -EINVAL;
-		}
+	{
+		int apply_ret;
 
+		/*
+		 * Source table is authoritative on Exynos8895.  Do not intersect it
+		 * with the stock DTB or ECT level_en mask: that path is exactly what
+		 * clipped the device back to 546 MHz.  Apply the same nine rows into
+		 * ACPM SRAM first, then publish those rows to Mali.
+		 */
+		apply_ret = exynos8895_g3d_hardcoded_apply();
+		if (apply_ret)
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"G3D hardcoded: SRAM apply during Mali init returned %d\n",
+				apply_ret);
+
+		memset(dvfs_table, 0, sizeof(gpu_dvfs_table_default));
 		for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
 			const struct exynos8895_g3d_hardcoded_opp *opp =
 				&exynos8895_g3d_opp_table[i];
 
-			if (g3d_rate_volt[i].rate != opp->clock_khz) {
-				GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-					"G3D hardcoded: slot %d CAL rate %u != source %u kHz\n",
-					i, g3d_rate_volt[i].rate, opp->clock_khz);
-				return -EINVAL;
-			}
-
 			dvfs_table[i].clock = opp->clock_khz;
-			dvfs_table[i].voltage = g3d_rate_volt[i].volt;
+			dvfs_table[i].voltage = opp->voltage_uv;
 			dvfs_table[i].min_threshold = opp->min_threshold;
 			dvfs_table[i].max_threshold = opp->max_threshold;
 			dvfs_table[i].down_staycount = opp->down_staycount;
@@ -390,6 +389,11 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 			dvfs_table[i].cpu_little_min_freq = opp->cpu_little_min_freq;
 			dvfs_table[i].cpu_big_max_freq = opp->cpu_big_max_freq ?
 				opp->cpu_big_max_freq : CPU_MAX;
+
+			GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+				"G3D HARD[%d] %u kHz %u uV PMS=%u/%u/%u\n",
+				i, opp->clock_khz, opp->voltage_uv,
+				opp->pll_m, opp->pll_p, opp->pll_s);
 		}
 
 		platform->gpu_max_clock = exynos8895_g3d_opp_table[0].clock_khz;
@@ -412,13 +416,10 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		}
 
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-			"G3D hardcoded ACPM/FVMap active: %u..%u kHz\n",
-			platform->gpu_max_clock, platform->gpu_min_clock);
+			"G3D hardcoded: Mali owns 9 source rows %u..%u kHz (SRAM ret=%d)\n",
+			platform->gpu_max_clock, platform->gpu_min_clock, apply_ret);
 		return 0;
 	}
-
-	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-		"G3D hardcoded SRAM validation refused override; using stock DTS/ECT table\n");
 #endif
 
 	/* Stock Samsung path, also used as the fail-safe on Exynos8895. */

@@ -26,16 +26,28 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
+		return exynos8895_g3d_opp_table[0].clock_khz;
+#endif
 	return vclk_get_max_freq(id);
 }
 
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
+		return exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
+#endif
 	return vclk_get_min_freq(id);
 }
 
 unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
+		return EXYNOS8895_G3D_OPP_COUNT;
+#endif
 	return vclk_get_lv_num(id);
 }
 
@@ -48,6 +60,20 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 {
 	struct vclk *vclk;
 	int ret;
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
+		if (!exynos8895_g3d_find_opp(rate)) {
+			pr_err("G3D hardcoded: refusing unsupported rate %lu kHz\n", rate);
+			return -EINVAL;
+		}
+		ret = exynos8895_g3d_hardcoded_apply();
+		if (ret) {
+			pr_err("G3D hardcoded: SRAM apply failed before %lu kHz (%d)\n", rate, ret);
+			return ret;
+		}
+	}
+#endif
 
 	if (IS_ACPM_VCLK(id)) {
 		ret = exynos_acpm_set_rate(GET_IDX(id), rate);
@@ -108,6 +134,15 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 {
 	int ret;
+#if defined(CONFIG_SOC_EXYNOS8895)
+	unsigned int i;
+
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
+		for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
+			table[i] = exynos8895_g3d_opp_table[i].clock_khz;
+		return EXYNOS8895_G3D_OPP_COUNT;
+	}
+#endif
 
 	ret = vclk_get_rate_table(id, table);
 
