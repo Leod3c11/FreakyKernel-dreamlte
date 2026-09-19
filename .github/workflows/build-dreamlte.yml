@@ -198,11 +198,20 @@ jobs:
             exit 1
           }
 
-          if [ ! -f dtb ]; then
-            echo "::error::O boot-base.img nao possui DTB separado."
-            echo "::error::Nao vamos gerar um boot.img potencialmente incorreto."
+          DTB_COMPONENT=""
+
+          if [ -f dtb ]; then
+            DTB_COMPONENT="dtb"
+            echo "DTB encontrado como componente moderno: dtb"
+          elif [ -f extra ]; then
+            DTB_COMPONENT="extra"
+            echo "DTB encontrado no campo legado Samsung: extra"
+          else
+            echo "::error::Nenhum componente DTB/extra foi encontrado no boot-base.img."
             exit 1
           fi
+
+          echo "DTB_COMPONENT=$DTB_COMPONENT" >> "$GITHUB_ENV"
 
           echo
           echo "========================================"
@@ -220,7 +229,11 @@ jobs:
           echo " REPLACING DTB"
           echo "========================================"
 
-          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img" dtb
+          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img" "$DTB_COMPONENT"
+
+          echo "===== DTB SUBSTITUIDO ====="
+          ls -lh "$DTB_COMPONENT"
+          sha256sum "$DTB_COMPONENT"
 
           echo
           echo "========================================"
@@ -232,6 +245,56 @@ jobs:
             "$GITHUB_WORKSPACE/artifacts/boot.img"
 
           test -s "$GITHUB_WORKSPACE/artifacts/boot.img"
+
+          echo
+          echo "========================================"
+          echo " VERIFY REPACKED BOOT"
+          echo "========================================"
+
+          rm -rf "$GITHUB_WORKSPACE/repack-verify"
+          mkdir -p "$GITHUB_WORKSPACE/repack-verify"
+
+          cp "$GITHUB_WORKSPACE/artifacts/boot.img"              "$GITHUB_WORKSPACE/repack-verify/boot.img"
+
+          cd "$GITHUB_WORKSPACE/repack-verify"
+
+          /tmp/magiskboot unpack boot.img 2>&1 | tee boot-info.txt
+
+          test -s kernel
+
+          if [ "$DTB_COMPONENT" = "extra" ]; then
+            test -s extra
+
+            if ! cmp -s               "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"               extra; then
+              echo "::error::O campo extra do boot final nao corresponde ao dtb.img compilado."
+              exit 1
+            fi
+          else
+            test -s dtb
+
+            if ! cmp -s               "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"               dtb; then
+              echo "::error::O DTB do boot final nao corresponde ao dtb.img compilado."
+              exit 1
+            fi
+          fi
+
+          if ! cmp -s             "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"             kernel; then
+            echo "::error::O kernel dentro do boot final nao corresponde ao Image compilado."
+            exit 1
+          fi
+
+          grep -q "SAMSUNG_SEANDROID" boot-info.txt || {
+            echo "::error::SAMSUNG_SEANDROID nao foi preservado."
+            exit 1
+          }
+
+          echo
+          echo "BOOT REPACK VALIDADO COM SUCESSO"
+          echo "Kernel: OK"
+          echo "DTB:    OK"
+          echo "Samsung SEAndroid trailer: OK"
+
+          cd "$GITHUB_WORKSPACE"
 
           echo
           echo "========================================"
