@@ -1,0 +1,271 @@
+name: Build FreakyKernel dreamlte
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - oc-exynos8895
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Kernel + DTB + boot.img
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      DEFCONFIG: exynos8895-dreamlte_defconfig
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            flex \
+            build-essential \
+            libssl-dev \
+            libelf-dev \
+            libncurses-dev \
+            cpio \
+            xz-utils \
+            unzip \
+            zip \
+            curl \
+            git \
+            python3 \
+            file
+
+      - name: Download AOSP GCC 4.9 toolchains
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/toolchains"
+
+          git clone \
+            --depth=1 \
+            --branch android-8.1.0_r42 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            "$GITHUB_WORKSPACE/toolchains/aarch64"
+
+          git clone \
+            --depth=1 \
+            --branch android-8.1.0_r42 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            "$GITHUB_WORKSPACE/toolchains/arm"
+
+          echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchains/aarch64/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/toolchains/arm/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_COMPAT=$GITHUB_WORKSPACE/toolchains/arm/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
+
+      - name: Show toolchain versions
+        run: |
+          "${CROSS_COMPILE}gcc" --version
+          "${CROSS_COMPILE_ARM32}gcc" --version
+
+      - name: Clean output
+        run: |
+          rm -rf out
+          mkdir -p out artifacts
+
+      - name: Configure dreamlte
+        run: |
+          make \
+            O=out \
+            ARCH="$ARCH" \
+            SUBARCH="$SUBARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            "$DEFCONFIG"
+
+          echo
+          echo "===== CONFIG CHECK ====="
+          grep '^CONFIG_EXYNOS_DTBTOOL=' out/.config || true
+          grep '^CONFIG_LOCALVERSION=' out/.config || true
+
+      - name: Build kernel and DTB
+        shell: bash
+        run: |
+          set -o pipefail
+
+          make \
+            O=out \
+            -j"$(nproc)" \
+            ARCH="$ARCH" \
+            SUBARCH="$SUBARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            Image Image.gz dtb.img \
+            2>&1 | tee build.log
+
+      - name: Verify kernel outputs
+        run: |
+          echo "========================================"
+          echo " BUILD OUTPUTS"
+          echo "========================================"
+
+          ls -lh out/arch/arm64/boot/
+
+          test -s out/arch/arm64/boot/Image
+          test -s out/arch/arm64/boot/Image.gz
+          test -s out/arch/arm64/boot/dtb.img
+
+          echo
+          file out/arch/arm64/boot/Image || true
+          file out/arch/arm64/boot/Image.gz || true
+          file out/arch/arm64/boot/dtb.img || true
+
+      - name: Collect kernel artifacts
+        run: |
+          cp out/arch/arm64/boot/Image artifacts/Image
+          cp out/arch/arm64/boot/Image.gz artifacts/Image.gz
+          cp out/arch/arm64/boot/dtb.img artifacts/dtb.img
+          cp out/.config artifacts/kernel.config
+          cp build.log artifacts/build.log
+
+      - name: Build boot.img from base image
+        shell: bash
+        run: |
+          set -e
+
+          BASE_BOOT="$GITHUB_WORKSPACE/boot/boot-base.img"
+
+          if [ ! -f "$BASE_BOOT" ]; then
+            echo
+            echo "================================================"
+            echo " boot/boot-base.img NAO ENCONTRADO"
+            echo "================================================"
+            echo
+            echo "Kernel e DTB foram compilados normalmente."
+            echo "O boot.img sera ignorado nesta execucao."
+            echo
+            echo "Adicione um boot.img conhecido e funcional em:"
+            echo
+            echo "boot/boot-base.img"
+            echo
+            exit 0
+          fi
+
+          echo "========================================"
+          echo " DOWNLOADING MAGISKBOOT v30.7"
+          echo "========================================"
+
+          curl -L \
+            --fail \
+            --retry 3 \
+            -o /tmp/Magisk-v30.7.apk \
+            https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
+
+          unzip -p \
+            /tmp/Magisk-v30.7.apk \
+            'lib/x86_64/libmagiskboot.so' \
+            > /tmp/magiskboot
+
+          chmod +x /tmp/magiskboot
+
+          /tmp/magiskboot 2>&1 | head -20 || true
+
+          echo
+          echo "========================================"
+          echo " UNPACKING BASE BOOT"
+          echo "========================================"
+
+          rm -rf "$GITHUB_WORKSPACE/repack"
+          mkdir -p "$GITHUB_WORKSPACE/repack"
+
+          cp "$BASE_BOOT" "$GITHUB_WORKSPACE/repack/boot-base.img"
+
+          cd "$GITHUB_WORKSPACE/repack"
+
+          /tmp/magiskboot unpack boot-base.img
+
+          echo
+          echo "===== BASE BOOT COMPONENTS ====="
+          ls -lah
+
+          test -f kernel || {
+            echo "::error::Kernel nao encontrado dentro do boot-base.img"
+            exit 1
+          }
+
+          if [ ! -f dtb ]; then
+            echo "::error::O boot-base.img nao possui DTB separado."
+            echo "::error::Nao vamos gerar um boot.img potencialmente incorreto."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo " REPLACING KERNEL"
+          echo "========================================"
+
+          #
+          # magiskboot descomprime o kernel automaticamente
+          # durante o unpack. Portanto usamos Image puro.
+          #
+          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" kernel
+
+          echo
+          echo "========================================"
+          echo " REPLACING DTB"
+          echo "========================================"
+
+          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img" dtb
+
+          echo
+          echo "========================================"
+          echo " REPACKING BOOT IMAGE"
+          echo "========================================"
+
+          /tmp/magiskboot repack \
+            boot-base.img \
+            "$GITHUB_WORKSPACE/artifacts/boot.img"
+
+          test -s "$GITHUB_WORKSPACE/artifacts/boot.img"
+
+          echo
+          echo "========================================"
+          echo " BOOT IMAGE SIZE"
+          echo "========================================"
+
+          BOOT_SIZE=$(stat -c%s "$GITHUB_WORKSPACE/artifacts/boot.img")
+          BOOT_MAX=41943040
+
+          echo "boot.img: $BOOT_SIZE bytes"
+          echo "limit:    $BOOT_MAX bytes"
+
+          if [ "$BOOT_SIZE" -gt "$BOOT_MAX" ]; then
+            echo "::error::boot.img excede o tamanho conhecido da particao boot do universal8895."
+            exit 1
+          fi
+
+      - name: Final artifact information
+        run: |
+          echo
+          echo "========================================"
+          echo " FINAL ARTIFACTS"
+          echo "========================================"
+
+          ls -lah artifacts/
+
+          echo
+          echo "===== SHA256 ====="
+          sha256sum artifacts/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreakyKernel-dreamlte-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
