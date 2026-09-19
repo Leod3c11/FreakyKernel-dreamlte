@@ -258,11 +258,19 @@ int exynos8895_g3d_hardcoded_apply(void)
 		return -EINVAL;
 	pll = sram_fvmap_base + pll_offset;
 
+	/*
+	 * The live FVMap is authoritative for the PLL register relocation.
+	 * Stock fvmap_copy_from_sram() performs the same low-16-bit comparison
+	 * and moves the generated CMUCAL PLL from +0x120 to the SRAM offset.
+	 * On this Exynos8895 device the real PLL_CON0_PLL_G3D is +0x140.
+	 */
 	if ((pll->addr & 0xffffU) != EXYNOS8895_G3D_PLL_SFR_LO) {
-		pr_err("G3D hardcoded: ACPM idx4 member addr=0x%x expected G3D +0x%x\n",
+		pr_err("G3D hardcoded: ACPM idx4 PLL addr=0x%x, expected live G3D CON0 +0x%x\n",
 		       pll->addr, EXYNOS8895_G3D_PLL_SFR_LO);
 		return -ENODEV;
 	}
+	pr_info("G3D hardcoded: live PLL_G3D identity accepted addr=0x%x offset=0x%x\n",
+		pll->addr, pll->addr & 0xffffU);
 
 	/* Accept either untouched Samsung rates or our already-installed rates. */
 	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {

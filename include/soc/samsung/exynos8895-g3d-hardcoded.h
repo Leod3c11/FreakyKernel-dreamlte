@@ -30,7 +30,13 @@
 #define EXYNOS8895_G3D_OPP_COUNT        9U
 #define EXYNOS8895_G3D_TMU_COUNT        7U
 #define EXYNOS8895_G3D_PLL_FIN_KHZ      26000U
-#define EXYNOS8895_G3D_PLL_SFR_LO       0x0120U
+/*
+ * The generated CMUCAL table starts PLL_CON0_PLL_G3D at +0x120, but the
+ * live Exynos8895 FVMap/PMUCAL relocates the real PLL CON0 to +0x140.
+ * fvmap_copy_from_sram() already performs exactly this relocation for CAL;
+ * the hardcoded path must validate against the live SRAM/PMUCAL address.
+ */
+#define EXYNOS8895_G3D_PLL_SFR_LO       0x0140U
 #define EXYNOS8895_G3D_MIN_UV           450000U
 #define EXYNOS8895_G3D_MAX_UV           850000U
 
