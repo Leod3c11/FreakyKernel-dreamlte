@@ -121,6 +121,7 @@ exynos8895_g3d_find_opp_by_acpm_key(unsigned long acpm_key_khz)
 }
 
 int exynos8895_g3d_hardcoded_apply(void);
+int exynos8895_g3d_sram_debug_dump(char *buf, unsigned int size);
 bool exynos8895_g3d_hardcoded_active(void);
 bool exynos8895_g3d_hardcoded_sync_cal(void);
 

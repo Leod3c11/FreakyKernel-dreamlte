@@ -43,6 +43,7 @@ extern struct kbase_device *pkbdev;
 extern unsigned long cal_g3d_get_pll_rate_exact(void);
 extern unsigned long cal_g3d_get_core_rate_exact(void);
 extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s);
+extern int exynos8895_g3d_sram_debug_dump(char *buf, unsigned int size);
 #endif
 
 int gpu_pmqos_dvfs_min_lock(int level)
@@ -114,6 +115,9 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	static bool prev_tmu_status = true;
 #ifdef CONFIG_MALI_DVFS
 	static bool prev_dvfs_status = true;
+#ifdef CONFIG_MALI_PM_QOS
+	static bool manual_pmqos_init;
+#endif
 #endif /* CONFIG_MALI_DVFS */
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
@@ -139,6 +143,12 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 			kbase_pm_set_policy(pkbdev, prev_policy);
 		platform->tmu_status = prev_tmu_status;
 #ifdef CONFIG_MALI_DVFS
+#ifdef CONFIG_MALI_PM_QOS
+		if (manual_pmqos_init) {
+			gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_DEINIT);
+			manual_pmqos_init = false;
+		}
+#endif
 		if (!platform->dvfs_status && prev_dvfs_status)
 			gpu_dvfs_on_off(true);
 #endif /* CONFIG_MALI_DVFS */
@@ -189,8 +199,40 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 
 	platform->tmu_status = false;
 #ifdef CONFIG_MALI_DVFS
-	if (platform->dvfs_status)
-		gpu_dvfs_on_off(false);
+	if (platform->dvfs_status) {
+		ret = gpu_dvfs_on_off(false);
+		if (ret) {
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"G3D DIAG: failed to stop governor (%d)\n", ret);
+			goto manual_fail;
+		}
+#ifdef CONFIG_MALI_PM_QOS
+		ret = gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_INIT);
+		if (ret) {
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"G3D DIAG: PM QoS init failed (%d)\n", ret);
+			goto manual_fail;
+		}
+		manual_pmqos_init = true;
+#endif
+	}
+
+	ret = gpu_dvfs_get_level(clk);
+	if (ret < 0) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D DIAG: %u kHz not present in DVFS table\n", clk);
+		ret = -EINVAL;
+		goto manual_fail;
+	}
+	platform->step = ret;
+#ifdef CONFIG_MALI_PM_QOS
+	if (manual_pmqos_init)
+		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_SET);
+#endif
+	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+		"G3D DIAG pre-transition: request=%u step=%d mif=%d cur=%d power=%d\n",
+		clk, platform->step, platform->table[platform->step].mem_freq,
+		platform->cur_clock, gpu_control_is_power_on(pkbdev));
 #endif /* CONFIG_MALI_DVFS */
 
 	/* Do not swallow the real transition result. */
@@ -199,19 +241,7 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
 			"G3D hardcoded manual: %u kHz transition failed (%d)\n",
 			clk, ret);
-		platform->tmu_status = prev_tmu_status;
-#ifdef CONFIG_MALI_DVFS
-		if (!platform->dvfs_status && prev_dvfs_status)
-			gpu_dvfs_on_off(true);
-#endif /* CONFIG_MALI_DVFS */
-		if (pm_ref_held) {
-			kbase_pm_context_idle(pkbdev);
-			pm_ref_held = false;
-		}
-		if (prev_policy)
-			kbase_pm_set_policy(pkbdev, prev_policy);
-		cur_state = false;
-		return ret;
+		goto manual_fail;
 	}
 
 	cur_state = true;
@@ -219,8 +249,40 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 		"G3D hardcoded manual: request=%u actual=%d voltage=%d power=%d\n",
 		clk, gpu_get_cur_clock(platform), gpu_get_cur_voltage(platform),
 		gpu_control_is_power_on(pkbdev));
-
+#if defined(CONFIG_SOC_EXYNOS8895)
+	{
+		unsigned int dm = 0, dp = 0, ds = 0;
+		cal_g3d_get_pll_pms(&dm, &dp, &ds);
+		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+			"G3D DIAG post-transition: req=%u driver=%d pll=%lu core=%lu PMS=%u/%u/%u step=%d mif=%d\n",
+			clk, gpu_get_cur_clock(platform), cal_g3d_get_pll_rate_exact(),
+			cal_g3d_get_core_rate_exact(), dm, dp, ds, platform->step,
+			(platform->step >= 0 && platform->step < platform->table_size) ?
+			platform->table[platform->step].mem_freq : 0);
+	}
+#endif
 	return count;
+
+manual_fail:
+	platform->tmu_status = prev_tmu_status;
+#ifdef CONFIG_MALI_DVFS
+#ifdef CONFIG_MALI_PM_QOS
+	if (manual_pmqos_init) {
+		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_DEINIT);
+		manual_pmqos_init = false;
+	}
+#endif
+	if (!platform->dvfs_status && prev_dvfs_status)
+		gpu_dvfs_on_off(true);
+#endif
+	if (pm_ref_held) {
+		kbase_pm_context_idle(pkbdev);
+		pm_ref_held = false;
+	}
+	if (prev_policy)
+		kbase_pm_set_policy(pkbdev, prev_policy);
+	cur_state = false;
+	return ret;
 }
 
 #if defined(CONFIG_SOC_EXYNOS8895)
@@ -232,6 +294,34 @@ static ssize_t show_clock_exact(struct device *dev, struct device_attribute *att
 static ssize_t show_clock_core(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_core_rate_exact());
+}
+
+static ssize_t show_g3d_diag(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
+	unsigned int m = 0, p = 0, s = 0;
+	int step = -1, mif = 0, voltage = 0;
+	if (!platform)
+		return scnprintf(buf, PAGE_SIZE, "error=no_platform\n");
+	step = platform->step;
+	if (step >= 0 && step < platform->table_size)
+		mif = platform->table[step].mem_freq;
+	cal_g3d_get_pll_pms(&m, &p, &s);
+	voltage = gpu_get_cur_voltage(platform);
+	return scnprintf(buf, PAGE_SIZE,
+		"power=%d dvfs=%d step=%d/%d driver=%d pll=%lu core=%lu PMS=%u/%u/%u voltage=%d mif_request=%d tmu=%d\n",
+		gpu_control_is_power_on(pkbdev) > 0 ? 1 : 0,
+		platform->dvfs_status ? 1 : 0, step, platform->table_size,
+		gpu_get_cur_clock(platform), cal_g3d_get_pll_rate_exact(),
+		cal_g3d_get_core_rate_exact(), m, p, s, voltage, mif,
+		platform->tmu_status ? 1 : 0);
+}
+
+static ssize_t show_g3d_sram(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return exynos8895_g3d_sram_debug_dump(buf, PAGE_SIZE);
 }
 
 static ssize_t show_pll_pms(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1466,6 +1556,8 @@ DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
 DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
 DEVICE_ATTR(clock_core, S_IRUGO, show_clock_core, NULL);
 DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
+DEVICE_ATTR(g3d_diag, S_IRUGO, show_g3d_diag, NULL);
+DEVICE_ATTR(g3d_sram, S_IRUGO, show_g3d_sram, NULL);
 #endif
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
 DEVICE_ATTR(power_state, S_IRUGO, show_power_state, NULL);
@@ -2038,6 +2130,14 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
 		goto out;
 	}
+	if (device_create_file(dev, &dev_attr_g3d_diag)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [g3d_diag]\n");
+		goto out;
+	}
+	if (device_create_file(dev, &dev_attr_g3d_sram)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [g3d_sram]\n");
+		goto out;
+	}
 #endif
 
 	if (device_create_file(dev, &dev_attr_vol)) {
@@ -2226,6 +2326,8 @@ void gpu_remove_sysfs_file(struct device *dev)
 	device_remove_file(dev, &dev_attr_clock_exact);
 	device_remove_file(dev, &dev_attr_clock_core);
 	device_remove_file(dev, &dev_attr_pll_pms);
+	device_remove_file(dev, &dev_attr_g3d_diag);
+	device_remove_file(dev, &dev_attr_g3d_sram);
 #endif
 	device_remove_file(dev, &dev_attr_vol);
 	device_remove_file(dev, &dev_attr_power_state);

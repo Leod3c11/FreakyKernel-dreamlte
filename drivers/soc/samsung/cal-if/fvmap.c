@@ -326,6 +326,73 @@ int exynos8895_g3d_hardcoded_apply(void)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_apply);
+
+int exynos8895_g3d_sram_debug_dump(char *buf, unsigned int size)
+{
+	struct fvmap_header *header;
+	struct rate_volt_header *rv;
+	struct clocks *clks;
+	struct pll_header *pll;
+	unsigned int idx = EXYNOS8895_G3D_ACPM_INDEX;
+	unsigned int pll_offset;
+	unsigned int i;
+	unsigned int len = 0;
+
+	if (!buf || !size)
+		return -EINVAL;
+	if (!sram_fvmap_base)
+		return scnprintf(buf, size, "sram=unavailable\n");
+
+	header = sram_fvmap_base;
+	len += scnprintf(buf + len, size - len,
+		"G3D_SRAM idx=%u lv=%u members=%u pll=%u ratevolt_off=0x%x members_off=0x%x\n",
+		idx, header[idx].num_of_lv, header[idx].num_of_members,
+		header[idx].num_of_pll, header[idx].o_ratevolt,
+		header[idx].o_members);
+
+	if (header[idx].num_of_lv != EXYNOS8895_G3D_OPP_COUNT ||
+	    header[idx].num_of_pll < 1 || header[idx].num_of_members < 1)
+		return len + scnprintf(buf + len, size - len, "ERROR identity mismatch\n");
+
+	if ((unsigned int)header[idx].o_ratevolt +
+	    sizeof(struct rate_volt) * EXYNOS8895_G3D_OPP_COUNT > FVMAP_SIZE ||
+	    (unsigned int)header[idx].o_members +
+	    sizeof(unsigned short) * header[idx].num_of_members > FVMAP_SIZE)
+		return len + scnprintf(buf + len, size - len, "ERROR offsets outside FVMAP_SIZE\n");
+
+	rv = sram_fvmap_base + header[idx].o_ratevolt;
+	clks = sram_fvmap_base + header[idx].o_members;
+	pll_offset = clks->addr[0];
+	len += scnprintf(buf + len, size - len, "pll_offset=0x%x\n", pll_offset);
+
+	if (pll_offset >= FVMAP_SIZE ||
+	    pll_offset + sizeof(struct pll_header) +
+	    sizeof(unsigned int) * EXYNOS8895_G3D_OPP_COUNT > FVMAP_SIZE)
+		return len + scnprintf(buf + len, size - len, "ERROR pll offset outside FVMAP_SIZE\n");
+
+	pll = sram_fvmap_base + pll_offset;
+	len += scnprintf(buf + len, size - len,
+		"pll_addr=0x%08x expected_lo=0x%04x\n",
+		pll->addr, EXYNOS8895_G3D_PLL_SFR_LO);
+	len += scnprintf(buf + len, size - len,
+		"slot live_rate live_uv pms_raw M P S | src_rate src_uv src_M src_P src_S acpm_key mif\n");
+
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT && len < size; i++) {
+		const struct exynos8895_g3d_hardcoded_opp *opp = &exynos8895_g3d_opp_table[i];
+		unsigned int raw = pll->pms[i];
+		unsigned int m = (raw >> 16) & 0x3ffU;
+		unsigned int p = (raw >> 8) & 0x3fU;
+		unsigned int s = raw & 0x7U;
+		len += scnprintf(buf + len, size - len,
+			"%u %u %u 0x%08x %u %u %u | %u %u %u %u %u %u %u\n",
+			i, rv->table[i].rate, rv->table[i].volt, raw, m, p, s,
+			opp->clock_khz, opp->voltage_uv, opp->pll_m, opp->pll_p,
+			opp->pll_s, opp->acpm_key_khz, opp->mem_freq);
+	}
+	return len;
+}
+EXPORT_SYMBOL_GPL(exynos8895_g3d_sram_debug_dump);
+
 #endif
 
 int fvmap_set_raw_voltage_table(unsigned int id, int uV)
