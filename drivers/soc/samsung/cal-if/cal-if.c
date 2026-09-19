@@ -65,8 +65,8 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 #if defined(CONFIG_SOC_EXYNOS8895)
 	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
 		const struct exynos8895_g3d_hardcoded_opp *opp;
-		unsigned long fw_rate, pll_rate;
-		unsigned int pll_id;
+		unsigned long fw_rate, pll_rate, core_rate;
+		unsigned int pll_id, mux_id;
 
 		opp = exynos8895_g3d_find_opp(rate);
 		if (!opp) {
@@ -118,6 +118,34 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 			       rate, pll_rate);
 			return -EIO;
 		}
+
+		/*
+		 * PLL_G3D is not the final clock delivered to the shader core.  The
+		 * G3D path ends at MUX_CLK_G3D_BUSD, whose other parent is the
+		 * temporary switch clock used while the PLL is being changed.  With
+		 * custom FVMap PMS values, explicitly restore BUSD to the now-stable
+		 * PLL parent and verify the delivered core clock, not only PLL_G3D.
+		 */
+		mux_id = cmucal_get_id("MUX_CLK_G3D_BUSD");
+		if (mux_id == INVALID_CLK_ID)
+			return -ENODEV;
+
+		ret = ra_set_rate(mux_id, rate * 1000UL);
+		if (ret) {
+			pr_err("G3D hardcoded: failed to restore BUSD mux to %lu kHz (%d)\n",
+			       rate, ret);
+			return ret;
+		}
+
+		core_rate = ra_recalc_rate(mux_id) / 1000UL;
+		if (core_rate != rate) {
+			pr_err("G3D hardcoded: core-path mismatch logical=%lu pll=%lu core=%lu kHz\n",
+			       rate, pll_rate, core_rate);
+			return -EIO;
+		}
+
+		pr_info("G3D hardcoded delivered: logical=%lu key=%u pll=%lu core=%lu kHz\n",
+			rate, opp->acpm_key_khz, pll_rate, core_rate);
 
 		vclk = cmucal_get_node(id);
 		if (vclk)
@@ -175,21 +203,19 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 	if (IS_ACPM_VCLK(id) &&
 	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
 		const struct exynos8895_g3d_hardcoded_opp *opp;
-		unsigned int pll_id;
-		unsigned long pll_rate;
+		unsigned int mux_id;
+		unsigned long core_rate;
 
 		/*
-		 * Do not use exynos_acpm_get_rate() for G3D readback on 8895.
-		 * This firmware reports 0 there while PLL_G3D is correctly running.
-		 * Read the physical PLL and map it back to the source-owned logical
-		 * table instead.  This makes cur_clock reflect actual hardware.
+		 * Report the clock that actually feeds G3D, not merely PLL_G3D.
+		 * BUSD may temporarily select CLKCMU_G3D_SWITCH during a transition.
 		 */
-		pll_id = cmucal_get_id("PLL_G3D");
-		if (pll_id == INVALID_CLK_ID)
+		mux_id = cmucal_get_id("MUX_CLK_G3D_BUSD");
+		if (mux_id == INVALID_CLK_ID)
 			return 0;
 
-		pll_rate = ra_recalc_rate(pll_id) / 1000UL;
-		opp = exynos8895_g3d_find_opp(pll_rate);
+		core_rate = ra_recalc_rate(mux_id) / 1000UL;
+		opp = exynos8895_g3d_find_opp(core_rate);
 		return opp ? opp->clock_khz : 0;
 	}
 #endif
@@ -228,6 +254,17 @@ unsigned long cal_g3d_get_pll_rate_exact(void)
 	return ra_recalc_rate(pll_id) / 1000UL;
 }
 EXPORT_SYMBOL_GPL(cal_g3d_get_pll_rate_exact);
+
+unsigned long cal_g3d_get_core_rate_exact(void)
+{
+	unsigned int mux_id;
+
+	mux_id = cmucal_get_id("MUX_CLK_G3D_BUSD");
+	if (mux_id == INVALID_CLK_ID)
+		return 0;
+	return ra_recalc_rate(mux_id) / 1000UL;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_get_core_rate_exact);
 
 int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s)
 {

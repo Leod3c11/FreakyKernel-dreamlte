@@ -316,6 +316,15 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_RT_PM
 	gpu_update_config_data_bool(np, "gpu_dvs", &platform->dvs_status);
 	gpu_update_config_data_bool(np, "gpu_inter_frame_pm", &platform->inter_frame_pm_feature);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	/*
+	 * Hardcoded G3D requires a stable clock domain. Samsung IFPM powers the
+	 * G3D island off between frames independently of normal kbase runtime PM,
+	 * which makes forced/readback clocks collapse to 0 and adds transition
+	 * latency. Keep runtime PM, but disable inter-frame power collapse.
+	 */
+	platform->inter_frame_pm_feature = false;
+#endif
 #else
 	platform->dvs_status = 0;
 	platform->inter_frame_pm_feature = 0;
