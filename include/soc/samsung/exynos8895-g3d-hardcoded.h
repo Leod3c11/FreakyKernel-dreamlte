@@ -39,6 +39,9 @@
 	 (((unsigned int)(_p) & 0x3fU) << 8) | \
 	 ((unsigned int)(_s) & 0x7U))
 
+#define EXYNOS8895_G3D_PMS_MASK \
+	EXYNOS8895_G3D_PACK_PMS(0x3ffU, 0x3fU, 0x7U)
+
 struct exynos8895_g3d_hardcoded_opp {
 	unsigned int clock_khz;
 	unsigned int voltage_uv;
@@ -57,10 +60,10 @@ struct exynos8895_g3d_hardcoded_opp {
  * Default hardcoded table.
  *
  * The top three rates are exact integer-N replacements for the nominal stock
- * 839/764/683 MHz slots.  Their voltage is deliberately 0 because this
- * device's ECT/ASV table version 8 group 4 exposes 0 uV for those three rows;
- * keeping 0 here preserves the live firmware voltage rather than inventing
- * one.  Set a non-zero voltage in this file when you want an absolute value.
+ * 839/764/683 MHz slots.  This device's ASV v8/group 4 disables those stock
+ * rows and exposes 0 uV, so an OC row must own an explicit voltage instead of
+ * passing 0 to ACPM.  The defaults below are conservative bring-up values
+ * within the observed 850000 uV rail limit; tune them for your silicon.
  *
  * 900 MHz exact preset for slot 0: clock=900000, M=450, P=13, S=0.
  *
@@ -69,9 +72,9 @@ struct exynos8895_g3d_hardcoded_opp {
  */
 static const struct exynos8895_g3d_hardcoded_opp exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT] = {
 	/* clock   volt      M    P  S   min max stay   MIF      little big */
-	{ 850000,      0,   425, 13, 0,   44, 65, 1, 2093000,       0,   0 },
-	{ 800000,      0,   400, 13, 0,   43, 65, 1, 2093000,       0,   0 },
-	{ 700000,      0,   350, 13, 0,   39, 65, 1, 2093000,       0,   0 },
+	{ 850000, 850000,   425, 13, 0,   44, 65, 1, 2093000,       0,   0 },
+	{ 800000, 825000,   400, 13, 0,   43, 65, 1, 2093000,       0,   0 },
+	{ 700000, 775000,   350, 13, 0,   39, 65, 1, 2093000,       0,   0 },
 	{ 572000, 681250,   176,  4, 1,   47, 65, 1, 2093000,       0,   0 },
 	{ 546000, 662500,   168,  4, 1,   40, 65, 1, 2002000,       0,   0 },
 	{ 455000, 650000,   140,  4, 1,   40, 65, 1, 2002000,       0,   0 },
@@ -86,5 +89,6 @@ static const unsigned int exynos8895_g3d_tmu_khz[EXYNOS8895_G3D_TMU_COUNT] = {
 };
 
 bool exynos8895_g3d_hardcoded_active(void);
+bool exynos8895_g3d_hardcoded_sync_cal(void);
 
 #endif

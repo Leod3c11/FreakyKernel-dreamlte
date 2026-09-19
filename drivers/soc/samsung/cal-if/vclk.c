@@ -2,6 +2,9 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <soc/samsung/ect_parser.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
+#endif
 
 #include "cmucal.h"
 #include "vclk.h"
@@ -617,6 +620,11 @@ static void vclk_bind(void)
 				pr_err("ECT ASV [%s] not found %d\n",
 					vclk->name, ret);
 		}
+#if defined(CONFIG_SOC_EXYNOS8895)
+		/* ASV v8 clips stock G3D max to 546 MHz; hardcoded SRAM owns all 9 slots. */
+		if (!strcmp(vclk->name, "dvfs_g3d"))
+			exynos8895_g3d_hardcoded_sync_cal();
+#endif
 	}
 }
 
