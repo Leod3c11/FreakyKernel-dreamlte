@@ -1,25 +1,38 @@
 #ifndef __EXYNOS8895_G3D_HARDCODED_H__
 #define __EXYNOS8895_G3D_HARDCODED_H__
 
+#include <linux/types.h>
+
 /*
- * Exynos8895 G3D source-owned OPP table.
+ * Exynos8895 G3D hardcoded ACPM/FVMap table.
  *
- * There are exactly nine slots because the stock ACPM/FVMap firmware exposes
- * nine G3D levels.  Do not change EXYNOS8895_G3D_OPP_COUNT until the FVMap
- * layout itself is rebuilt; changing the count would move following SRAM
- * structures.
+ * SINGLE SOURCE OF TRUTH:
+ *   edit only exynos8895_g3d_opp_table[] to change the nine G3D operating
+ *   points.  ACPM remains the only transition owner; the kernel never writes
+ *   PLL_G3D directly from the Mali DVFS path.
  *
- * clock_khz     - frequency name requested through ACPM_DVFS_G3D
- * voltage_uv    - absolute FVMap voltage; 0 preserves the firmware/ASV value
- * pll_m/p/s     - desired PLL values for this slot
- * override_pms  - 0 preserves firmware PMS; 1 writes packed M/P/S into FVMap
+ * Exactly nine slots are kept because the Exynos8895 DVFS firmware allocates
+ * nine G3D levels in SRAM.  Changing the slot count would change the FVMap
+ * layout and is intentionally rejected.
  *
- * IMPORTANT: keep override_pms = 0 until boot logs prove the firmware PMS
- * encoding matches EXYNOS8895_G3D_PACK_PMS().
+ * clock_khz  : rate requested through ACPM_DVFS_G3D
+ * voltage_uv : absolute live-FVMap voltage; 0 preserves the firmware value
+ * pll_m/p/s  : raw PLL_G3D PMS fields written into the matching SRAM slot
+ *
+ * For PLL_1052X with FIN=26 MHz:
+ *   Fout = 26000 * M / (P * 2^S) kHz
+ * The runtime validator rejects rows that are not exact or violate the PLL
+ * limits from pll_spec.c (P 1..63, M 64..1023, S 0..6, Fref 2..8 MHz,
+ * VCO 600..1200 MHz, Fout 9.5..1200 MHz).
  */
 
-#define EXYNOS8895_G3D_ACPM_INDEX 4U
-#define EXYNOS8895_G3D_OPP_COUNT  9U
+#define EXYNOS8895_G3D_ACPM_INDEX       4U
+#define EXYNOS8895_G3D_OPP_COUNT        9U
+#define EXYNOS8895_G3D_TMU_COUNT        7U
+#define EXYNOS8895_G3D_PLL_FIN_KHZ      26000U
+#define EXYNOS8895_G3D_PLL_SFR_LO       0x0120U
+#define EXYNOS8895_G3D_MIN_UV           450000U
+#define EXYNOS8895_G3D_MAX_UV           850000U
 
 #define EXYNOS8895_G3D_PACK_PMS(_m, _p, _s) \
 	((((unsigned int)(_m) & 0x3ffU) << 16) | \
@@ -32,7 +45,6 @@ struct exynos8895_g3d_hardcoded_opp {
 	unsigned int pll_m;
 	unsigned int pll_p;
 	unsigned int pll_s;
-	unsigned int override_pms;
 	unsigned int min_threshold;
 	unsigned int max_threshold;
 	unsigned int down_staycount;
@@ -42,23 +54,37 @@ struct exynos8895_g3d_hardcoded_opp {
 };
 
 /*
- * Safe validation table: stock frequency names and stock PMS observations.
- * voltage_uv=0 and override_pms=0 mean the first v6 build preserves the
- * firmware's voltage and PMS byte-for-byte while proving the new ownership
- * path is stable.  Edit these nine rows later; no duplicate rate table is
- * required elsewhere in the kernel.
+ * Default hardcoded table.
+ *
+ * The top three rates are exact integer-N replacements for the nominal stock
+ * 839/764/683 MHz slots.  Their voltage is deliberately 0 because this
+ * device's ECT/ASV table version 8 group 4 exposes 0 uV for those three rows;
+ * keeping 0 here preserves the live firmware voltage rather than inventing
+ * one.  Set a non-zero voltage in this file when you want an absolute value.
+ *
+ * 900 MHz exact preset for slot 0: clock=900000, M=450, P=13, S=0.
+ *
+ * Known device voltages below 572 MHz come from the supplied all_dump/ASV
+ * data.  PMS values are exact and are applied by ACPM from its own SRAM.
  */
 static const struct exynos8895_g3d_hardcoded_opp exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT] = {
-	/* clock   volt    M    P  S  pms  min max stay   MIF      little big */
-	{ 839000,     0, 129, 4, 0, 0,   44, 65, 1, 2093000,       0,   0 },
-	{ 764000,     0, 147, 5, 0, 0,   43, 65, 1, 2093000,       0,   0 },
-	{ 683000,     0, 105, 4, 0, 0,   39, 65, 1, 2093000,       0,   0 },
-	{ 572000,     0, 176, 4, 1, 0,   47, 65, 1, 2093000,       0,   0 },
-	{ 546000,     0, 168, 4, 1, 0,   40, 65, 1, 2002000,       0,   0 },
-	{ 455000,     0, 140, 4, 1, 0,   40, 65, 1, 2002000,       0,   0 },
-	{ 385000,     0, 148, 5, 1, 0,   42, 65, 1, 1794000,       0,   0 },
-	{ 338000,     0, 104, 4, 1, 0,   35, 65, 1, 1352000,       0,   0 },
-	{ 260000,     0, 160, 4, 2, 0,   35, 65, 1, 1352000,       0,   0 },
+	/* clock   volt      M    P  S   min max stay   MIF      little big */
+	{ 850000,      0,   425, 13, 0,   44, 65, 1, 2093000,       0,   0 },
+	{ 800000,      0,   400, 13, 0,   43, 65, 1, 2093000,       0,   0 },
+	{ 700000,      0,   350, 13, 0,   39, 65, 1, 2093000,       0,   0 },
+	{ 572000, 681250,   176,  4, 1,   47, 65, 1, 2093000,       0,   0 },
+	{ 546000, 662500,   168,  4, 1,   40, 65, 1, 2002000,       0,   0 },
+	{ 455000, 650000,   140,  4, 1,   40, 65, 1, 2002000,       0,   0 },
+	{ 385000, 643750,   385, 13, 1,   42, 65, 1, 1794000,       0,   0 },
+	{ 338000, 637500,   104,  4, 1,   35, 65, 1, 1352000,       0,   0 },
+	{ 260000, 637500,   160,  4, 2,   35, 65, 1, 1352000,       0,   0 },
 };
+
+/* Thermal locks must always point at rates that actually exist above. */
+static const unsigned int exynos8895_g3d_tmu_khz[EXYNOS8895_G3D_TMU_COUNT] = {
+	850000, 800000, 700000, 572000, 455000, 385000, 260000,
+};
+
+bool exynos8895_g3d_hardcoded_active(void);
 
 #endif

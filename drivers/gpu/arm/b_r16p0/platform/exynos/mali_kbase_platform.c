@@ -360,58 +360,68 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 	int i;
 
 #if defined(CONFIG_SOC_EXYNOS8895)
-	cal_table_size = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id,
+	if (exynos8895_g3d_hardcoded_active()) {
+		cal_table_size = cal_dfs_get_rate_asv_table(platform->g3d_cmu_cal_id,
 						     g3d_rate_volt);
-	if (cal_table_size != EXYNOS8895_G3D_OPP_COUNT) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-			"G3D hardcoded: CAL/FVMap has %d levels, expected %u\n",
-			cal_table_size, EXYNOS8895_G3D_OPP_COUNT);
-		return -EINVAL;
-	}
-
-	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
-		const struct exynos8895_g3d_hardcoded_opp *opp =
-			&exynos8895_g3d_opp_table[i];
-
-		if (g3d_rate_volt[i].rate != opp->clock_khz) {
+		if (cal_table_size != EXYNOS8895_G3D_OPP_COUNT) {
 			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"G3D hardcoded: slot %d CAL rate %u != source %u kHz\n",
-				i, g3d_rate_volt[i].rate, opp->clock_khz);
+				"G3D hardcoded: CAL/FVMap has %d levels, expected %u\n",
+				cal_table_size, EXYNOS8895_G3D_OPP_COUNT);
 			return -EINVAL;
 		}
 
-		dvfs_table[i].clock = opp->clock_khz;
-		dvfs_table[i].voltage = g3d_rate_volt[i].volt;
-		dvfs_table[i].min_threshold = opp->min_threshold;
-		dvfs_table[i].max_threshold = opp->max_threshold;
-		dvfs_table[i].down_staycount = opp->down_staycount;
-		dvfs_table[i].mem_freq = opp->mem_freq;
-		dvfs_table[i].cpu_little_min_freq = opp->cpu_little_min_freq;
-		dvfs_table[i].cpu_big_max_freq = opp->cpu_big_max_freq ?
-			opp->cpu_big_max_freq : CPU_MAX;
+		for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
+			const struct exynos8895_g3d_hardcoded_opp *opp =
+				&exynos8895_g3d_opp_table[i];
+
+			if (g3d_rate_volt[i].rate != opp->clock_khz) {
+				GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+					"G3D hardcoded: slot %d CAL rate %u != source %u kHz\n",
+					i, g3d_rate_volt[i].rate, opp->clock_khz);
+				return -EINVAL;
+			}
+
+			dvfs_table[i].clock = opp->clock_khz;
+			dvfs_table[i].voltage = g3d_rate_volt[i].volt;
+			dvfs_table[i].min_threshold = opp->min_threshold;
+			dvfs_table[i].max_threshold = opp->max_threshold;
+			dvfs_table[i].down_staycount = opp->down_staycount;
+			dvfs_table[i].mem_freq = opp->mem_freq;
+			dvfs_table[i].cpu_little_min_freq = opp->cpu_little_min_freq;
+			dvfs_table[i].cpu_big_max_freq = opp->cpu_big_max_freq ?
+				opp->cpu_big_max_freq : CPU_MAX;
+		}
+
+		platform->gpu_max_clock = exynos8895_g3d_opp_table[0].clock_khz;
+		platform->gpu_max_clock_limit = platform->gpu_max_clock;
+		platform->gpu_min_clock =
+			exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
+		platform->gpu_dvfs_start_clock = platform->gpu_min_clock;
+		platform->gpu_dvfs_config_clock = platform->gpu_min_clock;
+		platform->interactive.highspeed_clock = 455000;
+
+		if (TMU_LOCK_CLK_END == EXYNOS8895_G3D_TMU_COUNT) {
+			for (i = 0; i < EXYNOS8895_G3D_TMU_COUNT; i++)
+				platform->tmu_lock_clk[i] = exynos8895_g3d_tmu_khz[i];
+		}
+
+		for (i = 0; i < G3D_MAX_GOVERNOR_NUM; i++) {
+			gpu_dvfs_update_start_clk(i, platform->gpu_dvfs_start_clock);
+			gpu_dvfs_update_table(i, dvfs_table);
+			gpu_dvfs_update_table_size(i, EXYNOS8895_G3D_OPP_COUNT);
+		}
 
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-			"G3D source slot %d: %u kHz %u uV\n",
-			i, dvfs_table[i].clock, dvfs_table[i].voltage);
+			"G3D hardcoded ACPM/FVMap active: %u..%u kHz\n",
+			platform->gpu_max_clock, platform->gpu_min_clock);
+		return 0;
 	}
 
-	platform->gpu_max_clock = exynos8895_g3d_opp_table[0].clock_khz;
-	platform->gpu_max_clock_limit = platform->gpu_max_clock;
-	platform->gpu_min_clock =
-		exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
-	platform->gpu_dvfs_start_clock = platform->gpu_min_clock;
-	platform->gpu_dvfs_config_clock = platform->gpu_min_clock;
-	platform->interactive.highspeed_clock = 455000;
+	GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
+		"G3D hardcoded SRAM validation refused override; using stock DTS/ECT table\n");
+#endif
 
-	for (i = 0; i < G3D_MAX_GOVERNOR_NUM; i++) {
-		gpu_dvfs_update_start_clk(i, platform->gpu_dvfs_start_clock);
-		gpu_dvfs_update_table(i, dvfs_table);
-		gpu_dvfs_update_table_size(i, EXYNOS8895_G3D_OPP_COUNT);
-	}
-
-	return 0;
-#else
-	/* Other SoCs keep the original DTS/ECT intersection path. */
+	/* Stock Samsung path, also used as the fail-safe on Exynos8895. */
 	{
 		struct device_node *np = kbdev->dev->of_node;
 		int cal_get_dvfs_lv_num;
@@ -448,14 +458,18 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 						dvfs_table[j].down_staycount = of_data_int_array[table_idx+3];
 						dvfs_table[j].mem_freq = of_data_int_array[table_idx+4];
 						dvfs_table[j].cpu_little_min_freq = of_data_int_array[table_idx+5];
-						dvfs_table[j].cpu_big_max_freq = (of_data_int_array[table_idx+6] ? of_data_int_array[table_idx+6] : CPU_MAX);
+						if (platform->gpu_pmqos_cpu_cluster_num == 3) {
+							dvfs_table[j].cpu_middle_min_freq = of_data_int_array[table_idx+6];
+							dvfs_table[j].cpu_big_max_freq = (of_data_int_array[table_idx+7] ? of_data_int_array[table_idx+7] : CPU_MAX);
+						} else {
+							dvfs_table[j].cpu_big_max_freq = (of_data_int_array[table_idx+6] ? of_data_int_array[table_idx+6] : CPU_MAX);
+						}
 					}
 				}
 			}
 		}
 	}
 	return 0;
-#endif
 }
 #endif
 

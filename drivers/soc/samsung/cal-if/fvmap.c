@@ -1,5 +1,6 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/debugfs.h>
@@ -115,58 +116,213 @@ early_param("cp", get_cp_volt);
 
 
 #if defined(CONFIG_SOC_EXYNOS8895)
+static bool exynos8895_g3d_active;
+
+bool exynos8895_g3d_hardcoded_active(void)
+{
+	return exynos8895_g3d_active;
+}
+EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_active);
+
+static const unsigned int exynos8895_g3d_stock_rate[EXYNOS8895_G3D_OPP_COUNT] = {
+	839000, 764000, 683000, 572000, 546000, 455000, 385000, 338000, 260000,
+};
+
+static const unsigned int exynos8895_g3d_stock_pms[EXYNOS8895_G3D_OPP_COUNT] = {
+	EXYNOS8895_G3D_PACK_PMS(129, 4, 0),
+	EXYNOS8895_G3D_PACK_PMS(147, 5, 0),
+	EXYNOS8895_G3D_PACK_PMS(105, 4, 0),
+	EXYNOS8895_G3D_PACK_PMS(176, 4, 1),
+	EXYNOS8895_G3D_PACK_PMS(168, 4, 1),
+	EXYNOS8895_G3D_PACK_PMS(140, 4, 1),
+	EXYNOS8895_G3D_PACK_PMS(148, 5, 1),
+	EXYNOS8895_G3D_PACK_PMS(104, 4, 1),
+	EXYNOS8895_G3D_PACK_PMS(160, 4, 2),
+};
+
+static bool exynos8895_g3d_opp_valid(
+	const struct exynos8895_g3d_hardcoded_opp *opp)
+{
+	unsigned long long lhs, rhs, fvco_num;
+
+	if (!opp->pll_p || opp->pll_p > 63 ||
+	    opp->pll_m < 64 || opp->pll_m > 1023 || opp->pll_s > 6)
+		return false;
+
+	/* PLL_1052X Fref must stay inside 2..8 MHz with FIN=26 MHz. */
+	if ((unsigned long long)2000 * opp->pll_p > EXYNOS8895_G3D_PLL_FIN_KHZ ||
+	    (unsigned long long)8000 * opp->pll_p < EXYNOS8895_G3D_PLL_FIN_KHZ)
+		return false;
+
+	/* PLL_1052X VCO must stay inside 600..1200 MHz. */
+	fvco_num = (unsigned long long)EXYNOS8895_G3D_PLL_FIN_KHZ * opp->pll_m;
+	if (fvco_num < (unsigned long long)600000 * opp->pll_p ||
+	    fvco_num > (unsigned long long)1200000 * opp->pll_p)
+		return false;
+
+	if (opp->clock_khz < 9500 || opp->clock_khz > 1200000)
+		return false;
+
+	/* Hardcoded means exact: rate and PMS must describe the same frequency. */
+	lhs = (unsigned long long)EXYNOS8895_G3D_PLL_FIN_KHZ * opp->pll_m;
+	rhs = (unsigned long long)opp->clock_khz * opp->pll_p *
+	      (1ULL << opp->pll_s);
+	if (lhs != rhs)
+		return false;
+
+	if (opp->voltage_uv &&
+	    (opp->voltage_uv < EXYNOS8895_G3D_MIN_UV ||
+	     opp->voltage_uv > EXYNOS8895_G3D_MAX_UV))
+		return false;
+
+	return true;
+}
+
+static bool exynos8895_g3d_source_table_valid(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
+		if (!exynos8895_g3d_opp_valid(&exynos8895_g3d_opp_table[i])) {
+			pr_err("G3D hardcoded: invalid source row %u (%u kHz %u uV PMS=%u/%u/%u)\n",
+			       i,
+			       exynos8895_g3d_opp_table[i].clock_khz,
+			       exynos8895_g3d_opp_table[i].voltage_uv,
+			       exynos8895_g3d_opp_table[i].pll_m,
+			       exynos8895_g3d_opp_table[i].pll_p,
+			       exynos8895_g3d_opp_table[i].pll_s);
+			return false;
+		}
+
+		if (i && exynos8895_g3d_opp_table[i - 1].clock_khz <=
+			 exynos8895_g3d_opp_table[i].clock_khz) {
+			pr_err("G3D hardcoded: rates must be strictly descending (row %u)\n", i);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static void fvmap_override_exynos8895_g3d(void __iomem *sram_base)
 {
 	struct fvmap_header *header = sram_base;
 	struct rate_volt_header *rv;
 	struct clocks *clks;
-	struct pll_header *pll = NULL;
+	struct pll_header *pll;
+	struct vclk *vclk;
+	struct cmucal_clk *clk_node;
+	unsigned int pll_id;
+	unsigned int pll_offset;
 	unsigned int idx = EXYNOS8895_G3D_ACPM_INDEX;
 	unsigned int i;
 
 	if (!sram_base)
 		return;
 
-	if (header[idx].num_of_lv != EXYNOS8895_G3D_OPP_COUNT) {
-		pr_err("G3D FVMap: firmware has %u levels, source expects %u; refusing override\n",
-		       header[idx].num_of_lv, EXYNOS8895_G3D_OPP_COUNT);
+	/* Validate the source first.  No SRAM byte is touched on failure. */
+	if (!exynos8895_g3d_source_table_valid())
+		return;
+
+	/* Hard identity checks: ACPM G3D is index 4 and has exactly nine slots. */
+	if (idx >= cmucal_get_list_size(ACPM_VCLK_TYPE) ||
+	    header[idx].num_of_lv != EXYNOS8895_G3D_OPP_COUNT ||
+	    header[idx].num_of_pll != 1 || header[idx].num_of_members < 1) {
+		pr_err("G3D hardcoded: FVMap identity mismatch idx=%u lv=%u members=%u pll=%u\n",
+		       idx, header[idx].num_of_lv, header[idx].num_of_members,
+		       header[idx].num_of_pll);
+		return;
+	}
+
+	if (header[idx].o_ratevolt >= FVMAP_SIZE ||
+	    header[idx].o_members >= FVMAP_SIZE) {
+		pr_err("G3D hardcoded: invalid FVMap offsets ratevolt=0x%x members=0x%x\n",
+		       header[idx].o_ratevolt, header[idx].o_members);
+		return;
+	}
+
+	vclk = cmucal_get_node(ACPM_VCLK_TYPE | idx);
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (!vclk || !vclk->list || !vclk->lut ||
+	    vclk->num_list != 1 || vclk->num_rates != EXYNOS8895_G3D_OPP_COUNT ||
+	    pll_id == INVALID_CLK_ID || vclk->list[0] != pll_id) {
+		pr_err("G3D hardcoded: ACPM member is not PLL_G3D (vclk=%p list=%p num=%u member=0x%x pll=0x%x)\n",
+		       vclk, vclk ? vclk->list : NULL, vclk ? vclk->num_list : 0,
+		       (vclk && vclk->list) ? vclk->list[0] : INVALID_CLK_ID, pll_id);
+		return;
+	}
+
+	clk_node = cmucal_get_node(pll_id);
+	if (!clk_node || !IS_PLL(clk_node->id) ||
+	    ((clk_node->paddr & 0xffffU) != EXYNOS8895_G3D_PLL_SFR_LO)) {
+		pr_err("G3D hardcoded: PLL_G3D CMUCAL node mismatch\n");
 		return;
 	}
 
 	rv = sram_base + header[idx].o_ratevolt;
+	clks = sram_base + header[idx].o_members;
+	pll_offset = clks->addr[0];
+	if (pll_offset >= FVMAP_SIZE ||
+	    pll_offset + sizeof(struct pll_header) +
+	    sizeof(unsigned int) * EXYNOS8895_G3D_OPP_COUNT > FVMAP_SIZE) {
+		pr_err("G3D hardcoded: PLL FVMap offset 0x%x outside SRAM map\n",
+		       pll_offset);
+		return;
+	}
+	pll = sram_base + pll_offset;
 
-	if (header[idx].num_of_pll > 0) {
-		clks = sram_base + header[idx].o_members;
-		pll = sram_base + clks->addr[0];
+	if ((pll->addr & 0xffffU) != EXYNOS8895_G3D_PLL_SFR_LO) {
+		pr_err("G3D hardcoded: SRAM PLL member addr=0x%x is not G3D CON0 +0x%x\n",
+		       pll->addr, EXYNOS8895_G3D_PLL_SFR_LO);
+		return;
 	}
 
-	pr_info("G3D FVMap: ACPM idx=%u levels=%u pll=%u ratevolt=0x%x members=0x%x\n",
-		idx, header[idx].num_of_lv, header[idx].num_of_pll,
-		header[idx].o_ratevolt, header[idx].o_members);
+	/*
+	 * Validate the *live* Samsung table before replacing it.  These nine rates
+	 * and PMS values came from the supplied Exynos8895 all_dump/PLL_G3D table.
+	 * Any mismatch means this is not the expected firmware layout, so abort.
+	 */
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
+		if (rv->table[i].rate != exynos8895_g3d_stock_rate[i] ||
+		    pll->pms[i] != exynos8895_g3d_stock_pms[i]) {
+			pr_err("G3D hardcoded: stock SRAM validation failed slot %u rate=%u expected=%u pms=0x%08x expected=0x%08x; leaving Samsung table untouched\n",
+			       i, rv->table[i].rate, exynos8895_g3d_stock_rate[i],
+			       pll->pms[i], exynos8895_g3d_stock_pms[i]);
+			return;
+		}
+	}
 
+	pr_info("G3D hardcoded: validated ACPM idx=4, PLL_G3D +0x0120 and all 9 stock SRAM slots\n");
+
+	/* All validation completed: now atomically replace only the existing slots. */
 	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
 		const struct exynos8895_g3d_hardcoded_opp *opp =
 			&exynos8895_g3d_opp_table[i];
 		unsigned int old_rate = rv->table[i].rate;
 		unsigned int old_volt = rv->table[i].volt;
-		unsigned int old_pms = pll ? pll->pms[i] : 0;
-		unsigned int desired_pms = EXYNOS8895_G3D_PACK_PMS(
+		unsigned int old_pms = pll->pms[i];
+		unsigned int new_pms = EXYNOS8895_G3D_PACK_PMS(
 			opp->pll_m, opp->pll_p, opp->pll_s);
 
-		/* Existing slot only: never move FVMap offsets or increase num_of_lv. */
 		rv->table[i].rate = opp->clock_khz;
 		if (opp->voltage_uv)
 			rv->table[i].volt = opp->voltage_uv;
+		pll->pms[i] = new_pms;
 
-		if (pll && opp->override_pms)
-			pll->pms[i] = desired_pms;
-
-		pr_info("G3D FVMap[%u]: rate %u->%u kHz volt %u->%u uV PMSraw=0x%08x desired=%u/%u/%u packed=0x%08x override=%u\n",
-			i, old_rate, rv->table[i].rate,
-			old_volt, rv->table[i].volt,
-			old_pms, opp->pll_m, opp->pll_p, opp->pll_s,
-			desired_pms, opp->override_pms);
+		pr_info("G3D hardcoded[%u]: %u/%u/0x%08x -> %u/%u/0x%08x (PMS=%u/%u/%u)\n",
+			i, old_rate, old_volt, old_pms,
+			rv->table[i].rate, rv->table[i].volt, pll->pms[i],
+			opp->pll_m, opp->pll_p, opp->pll_s);
 	}
+
+	/* Publish the same rates to CAL only after SRAM validation and replacement. */
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
+		vclk->lut[i].rate = exynos8895_g3d_opp_table[i].clock_khz;
+	vclk->max_freq = exynos8895_g3d_opp_table[0].clock_khz;
+	vclk->min_freq = exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
+	exynos8895_g3d_active = true;
+
+	pr_info("G3D hardcoded: live ACPM SRAM table installed; ACPM remains sole transition owner\n");
 }
 #endif
 
