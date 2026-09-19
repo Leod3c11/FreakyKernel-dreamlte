@@ -18,20 +18,6 @@
 #ifndef _GPU_CONTROL_H_
 #define _GPU_CONTROL_H_
 
-struct gpu_hardcoded_status {
-	int requested_clock_khz;
-	int anchor_clock_khz;
-	int actual_clock_khz;
-	unsigned int pll_m;
-	unsigned int pll_p;
-	unsigned int pll_s;
-	unsigned int target_voltage_uv;
-	int actual_voltage_uv;
-	int last_stage;
-	int last_error;
-	int regulator_ready;
-};
-
 struct gpu_control_ops {
 	int (*is_power_on)(void);
 
@@ -64,12 +50,6 @@ int gpu_is_power_on(void);
 int gpu_power_init(struct kbase_device *kbdev);
 int gpu_get_cur_voltage(struct exynos_context *platform);
 int gpu_get_cur_clock(struct exynos_context *platform);
-int gpu_get_cur_clock_exact(struct exynos_context *platform);
-int gpu_control_set_clock_exact(struct kbase_device *kbdev, int clock);
-int gpu_control_restore_clock_exact(struct kbase_device *kbdev);
-int gpu_control_drop_exact_to_stock(struct kbase_device *kbdev, int clock);
-bool gpu_control_exact_clock_active(void);
-void gpu_get_hardcoded_status(struct gpu_hardcoded_status *status);
 int gpu_is_clock_on(void);
 int gpu_register_dump(void);
 int gpu_clock_init(struct kbase_device *kbdev);

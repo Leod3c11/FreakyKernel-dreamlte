@@ -16,11 +16,8 @@
  */
 
 #include <mali_kbase.h>
-#include <mali_kbase_pm.h>
 
 #include <linux/fb.h>
-#include <linux/delay.h>
-#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
 #include "exynos_tmu.h"
@@ -40,9 +37,6 @@
 #endif
 
 extern struct kbase_device *pkbdev;
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s);
-#endif
 
 int gpu_pmqos_dvfs_min_lock(int level)
 {
@@ -102,95 +96,11 @@ static ssize_t show_clock(struct device *dev, struct device_attribute *attr, cha
 	return ret;
 }
 
-static ssize_t show_clock_exact(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	struct exynos_context *platform =
-		(struct exynos_context *)pkbdev->platform_context;
-	int clock = 0;
-
-	if (!platform)
-		return -ENODEV;
-
-	if (gpu_control_is_power_on(pkbdev) == 1)
-		clock = gpu_get_cur_clock_exact(platform);
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", clock);
-}
-
-static ssize_t show_pll_pms(struct device *dev,
-                            struct device_attribute *attr, char *buf)
-{
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-    unsigned int m = 0, p = 0, s = 0;
-    int ret;
-
-    ret = cal_g3d_get_pll_pms(&m, &p, &s);
-    if (ret)
-        return ret;
-
-    return snprintf(buf, PAGE_SIZE, "M=%u P=%u S=%u\n", m, p, s);
-#else
-    return snprintf(buf, PAGE_SIZE, "unsupported\n");
-#endif
-}
-
-static ssize_t show_hardcoded_table(struct device *dev,
-                                    struct device_attribute *attr, char *buf)
-{
-    ssize_t ret = 0;
-    unsigned int i;
-
-    for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT && ret < PAGE_SIZE - 1; i++) {
-        const struct exynos8895_g3d_hardcoded_opp *opp =
-            &exynos8895_g3d_opp_table[i];
-
-        ret += snprintf(buf + ret, PAGE_SIZE - ret,
-                        "%u kHz PMS=%u/%u/%u anchor=%u voltage=%u uV\n",
-                        opp->clock_khz,
-                        opp->pll_m, opp->pll_p, opp->pll_s,
-                        opp->acpm_anchor_khz, opp->voltage_uv);
-    }
-
-    return ret;
-}
-
-static ssize_t show_hardcoded_status(struct device *dev,
-                                     struct device_attribute *attr, char *buf)
-{
-	struct gpu_hardcoded_status status = { 0, };
-	struct exynos_context *platform =
-		(struct exynos_context *)pkbdev->platform_context;
-	int power_on;
-
-	if (!platform)
-		return -ENODEV;
-
-	power_on = gpu_control_is_power_on(pkbdev);
-	gpu_get_hardcoded_status(&status);
-
-	return snprintf(buf, PAGE_SIZE,
-		"power=%d ifpm=%d ifpm_on=%d dvs=%d regulator=%d "
-		"requested=%d anchor=%d actual=%d PMS=%u/%u/%u "
-		"target_uv=%u actual_uv=%d stage=%d error=%d\n",
-		power_on > 0 ? 1 : 0,
-		platform->inter_frame_pm_status ? 1 : 0,
-		platform->inter_frame_pm_is_poweron ? 1 : 0,
-		platform->dvs_is_enabled ? 1 : 0,
-		status.regulator_ready,
-		status.requested_clock_khz, status.anchor_clock_khz,
-		status.actual_clock_khz,
-		status.pll_m, status.pll_p, status.pll_s,
-		status.target_voltage_uv, status.actual_voltage_uv,
-		status.last_stage, status.last_error);
-}
-
 static ssize_t set_clock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	unsigned int clk = 0;
 	int ret, i, policy_count;
 	static bool cur_state;
-	static bool pm_ref_held;
 	const struct kbase_pm_policy *const *policy_list;
 	static const struct kbase_pm_policy *prev_policy;
 	static bool prev_tmu_status = true;
@@ -223,10 +133,6 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 		if (!platform->dvfs_status)
 			gpu_dvfs_on_off(true);
 #endif /* CONFIG_MALI_DVFS */
-		if (pm_ref_held) {
-			kbase_pm_context_idle(pkbdev);
-			pm_ref_held = false;
-		}
 		cur_state = false;
 	} else {
 		policy_count = kbase_pm_list_policies(&policy_list);
@@ -236,134 +142,15 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 				break;
 			}
 		}
-		if (!pm_ref_held) {
-			int retry;
-
-			kbase_pm_context_active(pkbdev);
-			pm_ref_held = true;
-
-			for (retry = 0; retry < 100; retry++) {
-				if (gpu_control_is_power_on(pkbdev) > 0)
-					break;
-				usleep_range(1000, 2000);
-			}
-
-			if (gpu_control_is_power_on(pkbdev) <= 0) {
-				GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-					"%s: G3D did not power on for manual clock\n",
-					__func__);
-				kbase_pm_context_idle(pkbdev);
-				pm_ref_held = false;
-				kbase_pm_set_policy(pkbdev, prev_policy);
-				return -EIO;
-			}
-		}
-
 		platform->tmu_status = false;
 #ifdef CONFIG_MALI_DVFS
 		if (platform->dvfs_status)
 			gpu_dvfs_on_off(false);
 #endif /* CONFIG_MALI_DVFS */
-		ret = gpu_set_target_clk_vol(clk, false);
-		if (ret) {
-			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"%s: failed to force %u kHz (%d)\n",
-				__func__, clk, ret);
-			kbase_pm_set_policy(pkbdev, prev_policy);
-			platform->tmu_status = prev_tmu_status;
-#ifdef CONFIG_MALI_DVFS
-			if (!platform->dvfs_status && prev_dvfs_status)
-				gpu_dvfs_on_off(true);
-#endif /* CONFIG_MALI_DVFS */
-			if (pm_ref_held) {
-				kbase_pm_context_idle(pkbdev);
-				pm_ref_held = false;
-			}
-			cur_state = false;
-			return ret;
-		}
+		gpu_set_target_clk_vol(clk, false);
 		cur_state = true;
 	}
 
-	return count;
-}
-
-static ssize_t set_oc_clock(struct device *dev, struct device_attribute *attr,
-			    const char *buf, size_t count)
-{
-	unsigned int clk = 0;
-	int ret, i, policy_count;
-	static bool oc_state;
-	const struct kbase_pm_policy *const *policy_list;
-	static const struct kbase_pm_policy *prev_policy;
-	static bool prev_tmu_status = true;
-#ifdef CONFIG_MALI_DVFS
-	static bool prev_dvfs_status = true;
-#endif
-	struct exynos_context *platform =
-		(struct exynos_context *)pkbdev->platform_context;
-
-	if (!platform)
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 0, &clk);
-	if (ret)
-		return -EINVAL;
-
-	if (clk == 0) {
-		if (!oc_state)
-			return count;
-
-		ret = gpu_control_restore_clock_exact(pkbdev);
-		if (ret)
-			return ret;
-
-		kbase_pm_set_policy(pkbdev, prev_policy);
-		platform->tmu_status = prev_tmu_status;
-#ifdef CONFIG_MALI_DVFS
-		if (prev_dvfs_status && !platform->dvfs_status)
-			gpu_dvfs_on_off(true);
-#endif
-		oc_state = false;
-		return count;
-	}
-
-	if (!oc_state) {
-		prev_tmu_status = platform->tmu_status;
-#ifdef CONFIG_MALI_DVFS
-		prev_dvfs_status = platform->dvfs_status;
-#endif
-		prev_policy = kbase_pm_get_policy(pkbdev);
-
-		policy_count = kbase_pm_list_policies(&policy_list);
-		for (i = 0; i < policy_count; i++) {
-			if (sysfs_streq(policy_list[i]->name, "always_on")) {
-				kbase_pm_set_policy(pkbdev, policy_list[i]);
-				break;
-			}
-		}
-
-		/* Keep thermal management enabled in exact OC mode. */
-#ifdef CONFIG_MALI_DVFS
-		if (platform->dvfs_status)
-			gpu_dvfs_on_off(false);
-#endif
-	}
-
-	ret = gpu_control_set_clock_exact(pkbdev, clk);
-	if (ret) {
-		if (!oc_state) {
-#ifdef CONFIG_MALI_DVFS
-			if (prev_dvfs_status && !platform->dvfs_status)
-				gpu_dvfs_on_off(true);
-#endif
-			platform->tmu_status = prev_tmu_status;
-			kbase_pm_set_policy(pkbdev, prev_policy);
-		}
-		return ret;
-	}
-
-	oc_state = true;
 	return count;
 }
 
@@ -1583,11 +1370,6 @@ static ssize_t show_cl_boost_disable(struct device *dev, struct device_attribute
  */
 
 DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
-DEVICE_ATTR(oc_clock, S_IWUSR, NULL, set_oc_clock);
-DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
-DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
-DEVICE_ATTR(hardcoded_table, S_IRUGO, show_hardcoded_table, NULL);
-DEVICE_ATTR(hardcoded_status, S_IRUGO, show_hardcoded_status, NULL);
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
 DEVICE_ATTR(power_state, S_IRUGO, show_power_state, NULL);
 DEVICE_ATTR(asv_table, S_IRUGO, show_asv_table, NULL);
@@ -2147,31 +1929,6 @@ int gpu_create_sysfs_file(struct device *dev)
 		goto out;
 	}
 
-	if (device_create_file(dev, &dev_attr_oc_clock)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [oc_clock]\n");
-		goto out;
-	}
-
-	if (device_create_file(dev, &dev_attr_clock_exact)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_exact]\n");
-		goto out;
-	}
-
-	if (device_create_file(dev, &dev_attr_pll_pms)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
-		goto out;
-	}
-
-	if (device_create_file(dev, &dev_attr_hardcoded_table)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [hardcoded_table]\n");
-		goto out;
-	}
-
-	if (device_create_file(dev, &dev_attr_hardcoded_status)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [hardcoded_status]\n");
-		goto out;
-	}
-
 	if (device_create_file(dev, &dev_attr_vol)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [vol]\n");
 		goto out;
@@ -2354,8 +2111,6 @@ out:
 void gpu_remove_sysfs_file(struct device *dev)
 {
 	device_remove_file(dev, &dev_attr_clock);
-	device_remove_file(dev, &dev_attr_oc_clock);
-	device_remove_file(dev, &dev_attr_clock_exact);
 	device_remove_file(dev, &dev_attr_vol);
 	device_remove_file(dev, &dev_attr_power_state);
 	device_remove_file(dev, &dev_attr_asv_table);

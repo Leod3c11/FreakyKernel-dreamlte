@@ -2,8 +2,6 @@
 #include <linux/exynos-ss.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
-#include <soc/samsung/exynos8895-g3d-hardcoded.h>
-#include <linux/string.h>
 
 #include "pwrcal-env.h"
 #include "pwrcal-rae.h"
@@ -23,201 +21,19 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 	return 0;
 }
 
-#if defined(CONFIG_SOC_EXYNOS8895)
-int cal_g3d_validate_rate_exact(unsigned long rate);
-
-static bool cal_is_exynos8895_g3d(unsigned int id)
-{
-    struct vclk *vclk = cmucal_get_node(id);
-
-    return vclk && vclk->name && !strcmp(vclk->name, "dvfs_g3d");
-}
-
-static unsigned int cal_g3d_pll_id(void)
-{
-    return cmucal_get_id("PLL_G3D");
-}
-
-static unsigned long cal_g3d_pms_rate_khz(
-        const struct exynos8895_g3d_hardcoded_opp *opp)
-{
-    unsigned long long hz;
-
-    if (!opp || !opp->pll_p)
-        return 0;
-
-    hz = FIN_HZ_26M;
-    hz *= opp->pll_m;
-    do_div(hz, ((unsigned int)opp->pll_p << opp->pll_s));
-
-    return (unsigned long)(hz / 1000ULL);
-}
-
-static int cal_g3d_validate_opp(
-        const struct exynos8895_g3d_hardcoded_opp *opp)
-{
-    unsigned long actual_khz;
-
-    if (!opp)
-        return -EINVAL;
-
-    actual_khz = cal_g3d_pms_rate_khz(opp);
-    if (actual_khz != opp->clock_khz) {
-        pr_err("G3D hardcoded PMS mismatch: table=%u kHz PMS=%lu kHz (M=%u P=%u S=%u)\n",
-               opp->clock_khz, actual_khz,
-               opp->pll_m, opp->pll_p, opp->pll_s);
-        return -ERANGE;
-    }
-
-    return 0;
-}
-
-/*
- * Build a display/diagnostic voltage table without making DVFS depend on it.
- * Several stock Exynos8895 top OPPs legitimately expose 0 uV through FVMap;
- * that must never invalidate the frequency table.
- */
-static int cal_g3d_build_hardcoded_voltage_table(unsigned int id,
-                                                  unsigned int *table)
-{
-    unsigned long stock_rate[48];
-    unsigned int stock_volt[48];
-    int stock_count, volt_count;
-    unsigned int i;
-    int j;
-
-    stock_count = vclk_get_rate_table(id, stock_rate);
-    volt_count = fvmap_get_voltage_table(id, stock_volt);
-
-    for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
-        const struct exynos8895_g3d_hardcoded_opp *opp =
-            &exynos8895_g3d_opp_table[i];
-        unsigned int voltage = opp->voltage_uv;
-
-        if (!voltage && stock_count > 0 && stock_count == volt_count) {
-            for (j = 0; j < stock_count; j++) {
-                if (stock_rate[j] == opp->acpm_anchor_khz) {
-                    voltage = stock_volt[j];
-                    break;
-                }
-            }
-        }
-
-        table[i] = voltage;
-    }
-
-    return EXYNOS8895_G3D_OPP_COUNT;
-}
-
-int cal_g3d_set_acpm_anchor(unsigned long rate)
-{
-    const struct exynos8895_g3d_hardcoded_opp *opp;
-    struct vclk *vclk;
-    unsigned int id;
-    int ret;
-
-    opp = exynos8895_g3d_find_opp(rate);
-    if (!opp)
-        return -EINVAL;
-
-    id = cmucal_get_id("dvfs_g3d");
-    if (id == INVALID_CLK_ID)
-        return -ENODEV;
-
-    ret = exynos_acpm_set_rate(GET_IDX(id), opp->acpm_anchor_khz);
-    if (ret)
-        return ret;
-
-    vclk = cmucal_get_node(id);
-    if (vclk)
-        vclk->vrate = opp->acpm_anchor_khz;
-
-    return 0;
-}
-EXPORT_SYMBOL_GPL(cal_g3d_set_acpm_anchor);
-
-int cal_g3d_set_pll_hardcoded(unsigned long rate)
-{
-    const struct exynos8895_g3d_hardcoded_opp *opp;
-    unsigned int pll_id;
-    unsigned int m, p, s;
-    unsigned long actual;
-    int ret;
-
-    opp = exynos8895_g3d_find_opp(rate);
-    if (!opp)
-        return -EINVAL;
-
-    ret = cal_g3d_validate_opp(opp);
-    if (ret)
-        return ret;
-
-    pll_id = cal_g3d_pll_id();
-    if (pll_id == INVALID_CLK_ID)
-        return -ENODEV;
-
-    ret = ra_set_pll_pms(pll_id, opp->pll_m, opp->pll_p, opp->pll_s);
-    if (ret)
-        return ret;
-
-    ret = ra_get_pll_pms(pll_id, &m, &p, &s);
-    if (ret)
-        return ret;
-
-    if (m != opp->pll_m || p != opp->pll_p || s != opp->pll_s) {
-        pr_err("G3D PMS readback mismatch: wanted M=%u P=%u S=%u got M=%u P=%u S=%u\n",
-               opp->pll_m, opp->pll_p, opp->pll_s, m, p, s);
-        return -EIO;
-    }
-
-    actual = ra_recalc_rate(pll_id) / 1000UL;
-    if (actual != rate) {
-        pr_err("G3D hardcoded rate mismatch: requested=%lu actual=%lu kHz\n",
-               rate, actual);
-        return -EIO;
-    }
-
-    return 0;
-}
-EXPORT_SYMBOL_GPL(cal_g3d_set_pll_hardcoded);
-
-int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s)
-{
-    unsigned int pll_id = cal_g3d_pll_id();
-
-    if (pll_id == INVALID_CLK_ID)
-        return -ENODEV;
-
-    return ra_get_pll_pms(pll_id, m, p, s);
-}
-EXPORT_SYMBOL_GPL(cal_g3d_get_pll_pms);
-#endif
-
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id))
-        return exynos8895_g3d_opp_table[0].clock_khz;
-#endif
-    return vclk_get_max_freq(id);
+	return vclk_get_max_freq(id);
 }
 
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id))
-        return exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
-#endif
-    return vclk_get_min_freq(id);
+	return vclk_get_min_freq(id);
 }
 
 unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id))
-        return EXYNOS8895_G3D_OPP_COUNT;
-#endif
-    return vclk_get_lv_num(id);
+	return vclk_get_lv_num(id);
 }
 
 int cal_dfs_get_bigturbo_max_freq(unsigned int *table)
@@ -227,41 +43,21 @@ int cal_dfs_get_bigturbo_max_freq(unsigned int *table)
 
 int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 {
-    struct vclk *vclk;
-    int ret;
+	struct vclk *vclk;
+	int ret;
 
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id)) {
-        struct vclk *g3d_vclk;
+	if (IS_ACPM_VCLK(id)) {
+		ret = exynos_acpm_set_rate(GET_IDX(id), rate);
+		if (!ret) {
+			vclk = cmucal_get_node(id);
+			if (vclk)
+				vclk->vrate = rate;
+		}
+	} else {
+		ret = vclk_set_rate(id, rate);
+	}
 
-        ret = cal_g3d_set_acpm_anchor(rate);
-        if (ret)
-            return ret;
-
-        ret = cal_g3d_set_pll_hardcoded(rate);
-        if (ret)
-            return ret;
-
-        g3d_vclk = cmucal_get_node(id);
-        if (g3d_vclk)
-            g3d_vclk->vrate = rate;
-
-        return 0;
-    }
-#endif
-
-    if (IS_ACPM_VCLK(id)) {
-        ret = exynos_acpm_set_rate(GET_IDX(id), rate);
-        if (!ret) {
-            vclk = cmucal_get_node(id);
-            if (vclk)
-                vclk->vrate = rate;
-        }
-    } else {
-        ret = vclk_set_rate(id, rate);
-    }
-
-    return ret;
+	return ret;
 }
 
 int cal_dfs_set_rate_switch(unsigned int id, unsigned long switch_rate)
@@ -284,41 +80,29 @@ int cal_dfs_set_rate_restore(unsigned int id, unsigned long switch_rate)
 
 unsigned long cal_dfs_cached_get_rate(unsigned int id)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id)) {
-        unsigned int pll_id = cal_g3d_pll_id();
-        if (pll_id == INVALID_CLK_ID)
-            return 0;
-        return ra_recalc_rate(pll_id) / 1000UL;
-    }
-#endif
-    return vclk_get_rate(id);
+	int ret;
+
+	ret = vclk_get_rate(id);
+
+	return ret;
 }
 
 unsigned long cal_dfs_get_rate(unsigned int id)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id)) {
-        unsigned int pll_id = cal_g3d_pll_id();
-        if (pll_id == INVALID_CLK_ID)
-            return 0;
-        return ra_recalc_rate(pll_id) / 1000UL;
-    }
-#endif
-    return vclk_recalc_rate(id);
+	int ret;
+
+	ret = vclk_recalc_rate(id);
+
+	return ret;
 }
 
 int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id)) {
-        unsigned int i;
-        for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
-            table[i] = exynos8895_g3d_opp_table[i].clock_khz;
-        return EXYNOS8895_G3D_OPP_COUNT;
-    }
-#endif
-    return vclk_get_rate_table(id, table);
+	int ret;
+
+	ret = vclk_get_rate_table(id, table);
+
+	return ret;
 }
 
 int cal_clk_setrate(unsigned int id, unsigned long rate)
@@ -338,43 +122,6 @@ unsigned long cal_clk_getrate(unsigned int id)
 
 	return ret;
 }
-
-/*
- * Exynos8895 exact G3D PLL control.
- *
- * ACPM exposes nominal DVFS rates. This helper validates that the requested
- * kHz value is exactly representable by PLL_G3D before touching hardware,
- * then programs the physical PLL through the existing CAL RA layer.
- */
-int cal_g3d_validate_rate_exact(unsigned long rate)
-{
-    const struct exynos8895_g3d_hardcoded_opp *opp;
-
-    opp = exynos8895_g3d_find_opp(rate);
-    if (!opp)
-        return -EINVAL;
-
-    return cal_g3d_validate_opp(opp);
-}
-EXPORT_SYMBOL_GPL(cal_g3d_validate_rate_exact);
-
-int cal_g3d_set_rate_exact(unsigned long rate)
-{
-    return cal_g3d_set_pll_hardcoded(rate);
-}
-EXPORT_SYMBOL_GPL(cal_g3d_set_rate_exact);
-
-unsigned long cal_g3d_get_rate_exact(void)
-{
-	unsigned int pll_id;
-
-	pll_id = cmucal_get_id("PLL_G3D");
-	if (pll_id == INVALID_CLK_ID)
-		return 0;
-
-	return ra_recalc_rate(pll_id) / 1000;
-}
-EXPORT_SYMBOL_GPL(cal_g3d_get_rate_exact);
 
 int cal_clk_enable(unsigned int id)
 {
@@ -487,11 +234,7 @@ int cal_cluster_status(unsigned int cluster)
 
 int cal_dfs_get_asv_table(unsigned int id, unsigned int *table)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (cal_is_exynos8895_g3d(id))
-        return cal_g3d_build_hardcoded_voltage_table(id, table);
-#endif
-    return fvmap_get_voltage_table(id, table);
+	return fvmap_get_voltage_table(id, table);
 }
 
 void cal_dfs_set_volt_margin(unsigned int id, int volt)

@@ -21,8 +21,6 @@
 #include <linux/pm_qos.h>
 #include <linux/pm_domain.h>
 #include <linux/clk.h>
-#include <linux/regulator/consumer.h>
-#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 
 #include "mali_kbase_platform.h"
 #include "gpu_dvfs_handler.h"
@@ -37,27 +35,6 @@
 #ifdef CONFIG_CAL_IF
 #include <soc/samsung/cal-if.h>
 #endif
-
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-extern int cal_g3d_validate_rate_exact(unsigned long rate);
-extern int cal_g3d_set_rate_exact(unsigned long rate);
-extern unsigned long cal_g3d_get_rate_exact(void);
-extern int cal_g3d_set_acpm_anchor(unsigned long rate);
-extern int cal_g3d_set_pll_hardcoded(unsigned long rate);
-extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s);
-#endif
-
-static bool gpu_exact_clock_active;
-static struct regulator *g3d_hardcoded_regulator;
-static struct gpu_hardcoded_status g3d_hardcoded_status;
-
-void gpu_get_hardcoded_status(struct gpu_hardcoded_status *status)
-{
-	if (!status)
-		return;
-
-	*status = g3d_hardcoded_status;
-}
 #ifdef CONFIG_OF
 #include <linux/of.h>
 #endif
@@ -138,401 +115,66 @@ int gpu_get_cur_clock(struct exynos_context *platform)
 #endif
 }
 
-int gpu_get_cur_clock_exact(struct exynos_context *platform)
+#ifdef CONFIG_MALI_DVFS
+static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 {
-	if (!platform)
-		return -ENODEV;
-
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-	return (int)cal_g3d_get_rate_exact();
-#else
-	return gpu_get_cur_clock(platform);
-#endif
-}
-
-bool gpu_control_exact_clock_active(void)
-{
-	return gpu_exact_clock_active;
-}
-
-/*
- * Manual exact-clock path for Exynos8895.
- *
- * First ask ACPM for the highest stock OPP so the firmware keeps control of
- * the voltage rail. Then program PLL_G3D directly and verify PMS readback.
- * The first-stage ceiling is deliberately 900 MHz; higher clocks need a
- * separately validated voltage policy.
- */
-int gpu_control_set_clock_exact(struct kbase_device *kbdev, int clock)
-{
-	struct exynos_context *platform;
 	int ret = 0;
-	int actual;
 
-	if (!kbdev)
-		return -ENODEV;
+#ifdef CONFIG_MALI_RT_PM
+	if (platform->exynos_pm_domain)
+		mutex_lock(&platform->exynos_pm_domain->access_lock);
 
-	platform = (struct exynos_context *)kbdev->platform_context;
-	if (!platform)
-		return -ENODEV;
+	if (!gpu_is_power_on()) {
+		ret = -1;
+		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: can't set clock in the power-off state!\n", __func__);
+		goto err;
+	}
+#endif /* CONFIG_MALI_RT_PM */
 
-	if (clock < exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz ||
-	    clock > exynos8895_g3d_opp_table[0].clock_khz)
-		return -ERANGE;
+	if (clk == platform->cur_clock) {
+		ret = 0;
+		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u, "%s: skipped to set clock for %dMhz!\n",
+				__func__, platform->cur_clock);
 
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-	ret = cal_g3d_validate_rate_exact(clock);
-	if (ret) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-			"%s: %d kHz is not exactly synthesizable by PLL_G3D (%d)\n",
-			__func__, clock, ret);
+#ifdef CONFIG_MALI_RT_PM
+		if (platform->exynos_pm_domain)
+			mutex_unlock(&platform->exynos_pm_domain->access_lock);
+#endif
 		return ret;
 	}
 
-	if (!gpu_is_power_on())
-		return -EAGAIN;
-
-	mutex_lock(&platform->gpu_clock_lock);
-
-	if (platform->dvs_is_enabled ||
-	    (platform->inter_frame_pm_status &&
-	     !platform->inter_frame_pm_is_poweron)) {
-		ret = -EBUSY;
-		goto out_unlock;
-	}
-
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_lock(&platform->exynos_pm_domain->access_lock);
-#endif
-
-	ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id,
-			       platform->gpu_max_clock);
-	if (ret)
-		goto out_pd_unlock;
-
-	platform->cur_clock =
-		cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-
-	ret = cal_g3d_set_rate_exact(clock);
-	if (ret)
-		goto restore_stock;
-
-	actual = (int)cal_g3d_get_rate_exact();
-	if (actual != clock) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-			"%s: verify failed requested=%d actual=%d kHz\n",
-			__func__, clock, actual);
-		ret = -EIO;
-		goto restore_stock;
-	}
-
-	platform->cur_clock = actual;
-	gpu_exact_clock_active = true;
-	GPU_LOG(DVFS_WARNING, LSI_CLOCK_VALUE, clock, actual,
-		"EXACT_G3D_OC requested=%d actual=%d kHz\n",
-		clock, actual);
-	goto out_pd_unlock;
-
-restore_stock:
-	cal_dfs_set_rate(platform->g3d_cmu_cal_id,
-			 platform->gpu_max_clock);
-	platform->cur_clock =
-		cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-	gpu_exact_clock_active = false;
-
-out_pd_unlock:
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_unlock(&platform->exynos_pm_domain->access_lock);
-#endif
-out_unlock:
-	mutex_unlock(&platform->gpu_clock_lock);
-	return ret;
+#ifdef CONFIG_DEBUG_SNAPSHOT_FREQ
+	if (platform->gpu_dss_freq_id)
+#ifdef CONFIG_SOC_EXYNOS9820
+		dbg_snapshot_freq_misc(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_IN);
 #else
-	return -EOPNOTSUPP;
+		dbg_snapshot_freq(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_IN);
 #endif
-}
-
-int gpu_control_drop_exact_to_stock(struct kbase_device *kbdev, int clock)
-{
-	struct exynos_context *platform;
-	int ret;
-
-	if (!kbdev)
-		return -ENODEV;
-
-	platform = (struct exynos_context *)kbdev->platform_context;
-	if (!platform)
-		return -ENODEV;
-
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-	if (gpu_dvfs_get_level(clock) < 0)
-		return -EINVAL;
-
-	mutex_lock(&platform->gpu_clock_lock);
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_lock(&platform->exynos_pm_domain->access_lock);
 #endif
 
-	ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id, clock);
-	if (!ret) {
-		platform->cur_clock =
-			cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-		gpu_exact_clock_active = false;
-	}
-
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_unlock(&platform->exynos_pm_domain->access_lock);
-#endif
-	mutex_unlock(&platform->gpu_clock_lock);
-
-	return ret;
-#else
-	return -EOPNOTSUPP;
-#endif
-}
-
-int gpu_control_restore_clock_exact(struct kbase_device *kbdev)
-{
-	struct exynos_context *platform;
-	int ret;
-
-	if (!kbdev)
-		return -ENODEV;
-
-	platform = (struct exynos_context *)kbdev->platform_context;
-	if (!platform)
-		return -ENODEV;
-
-#if defined(CONFIG_CAL_IF) && defined(CONFIG_SOC_EXYNOS8895)
-	if (!gpu_is_power_on())
-		return -EAGAIN;
-
-	mutex_lock(&platform->gpu_clock_lock);
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_lock(&platform->exynos_pm_domain->access_lock);
-#endif
-
-	ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id,
-			       platform->gpu_dvfs_config_clock);
-	if (!ret) {
-		platform->cur_clock =
-			cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-		gpu_exact_clock_active = false;
-	}
-
-#ifdef CONFIG_MALI_RT_PM
-	if (platform->exynos_pm_domain)
-		mutex_unlock(&platform->exynos_pm_domain->access_lock);
-#endif
-	mutex_unlock(&platform->gpu_clock_lock);
-
-	return ret;
-#else
-	return 0;
-#endif
-}
-
-#ifdef CONFIG_MALI_DVFS
-static int gpu_set_hardcoded_voltage(struct exynos_context *platform,
-                                      unsigned int voltage_uv)
-{
-#ifdef CONFIG_REGULATOR
-    int ret;
-    int actual;
-
-    if (!voltage_uv)
-        return 0;
-
-    if (voltage_uv < EXYNOS8895_G3D_MIN_UV ||
-        voltage_uv > EXYNOS8895_G3D_MAX_UV) {
-        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                "G3D hardcoded voltage %u uV is outside source limits %u..%u uV\n",
-                voltage_uv, EXYNOS8895_G3D_MIN_UV,
-                EXYNOS8895_G3D_MAX_UV);
-        return -ERANGE;
-    }
-
-    if (!g3d_hardcoded_regulator)
-        return -ENODEV;
-
-    ret = regulator_set_voltage(g3d_hardcoded_regulator,
-                                voltage_uv, voltage_uv);
-    if (ret) {
-        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                "G3D hardcoded regulator_set_voltage(%u) failed: %d\n",
-                voltage_uv, ret);
-        return ret;
-    }
-
-    actual = regulator_get_voltage(g3d_hardcoded_regulator);
-    if (actual > 0)
-        platform->cur_voltage = actual;
-
-    if (actual > 0 && actual != voltage_uv) {
-        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                "G3D voltage verify failed requested=%u actual=%d uV\n",
-                voltage_uv, actual);
-        return -EIO;
-    }
-
-    return 0;
-#else
-    return voltage_uv ? -EOPNOTSUPP : 0;
-#endif
-}
-
-static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
-{
-    int ret = 0;
-
-#ifdef CONFIG_MALI_RT_PM
-    if (platform->exynos_pm_domain)
-        mutex_lock(&platform->exynos_pm_domain->access_lock);
-
-    if (!gpu_is_power_on()) {
-        ret = -1;
-        GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u,
-                "%s: can't set clock in the power-off state!\n", __func__);
-        goto err;
-    }
-#endif /* CONFIG_MALI_RT_PM */
-
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (clk == platform->cur_clock &&
-        (int)cal_g3d_get_rate_exact() == clk) {
-        ret = 0;
-        goto err;
-    }
-#else
-    if (clk == platform->cur_clock) {
-        ret = 0;
-        goto err;
-    }
-#endif
+	cal_dfs_set_rate(platform->g3d_cmu_cal_id, clk);
 
 #ifdef CONFIG_DEBUG_SNAPSHOT_FREQ
-    if (platform->gpu_dss_freq_id)
+	if (platform->gpu_dss_freq_id)
 #ifdef CONFIG_SOC_EXYNOS9820
-        dbg_snapshot_freq_misc(platform->gpu_dss_freq_id,
-                               platform->cur_clock, clk, DSS_FLAG_IN);
+		dbg_snapshot_freq_misc(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_OUT);
 #else
-        dbg_snapshot_freq(platform->gpu_dss_freq_id,
-                          platform->cur_clock, clk, DSS_FLAG_IN);
+		dbg_snapshot_freq(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_OUT);
 #endif
 #endif
 
-#if defined(CONFIG_SOC_EXYNOS8895)
-    {
-        const struct exynos8895_g3d_hardcoded_opp *opp;
+	platform->cur_clock = cal_dfs_get_rate(platform->g3d_cmu_cal_id);
 
-        opp = exynos8895_g3d_find_opp(clk);
-        g3d_hardcoded_status.requested_clock_khz = clk;
-        g3d_hardcoded_status.actual_clock_khz =
-            (int)cal_g3d_get_rate_exact();
-        g3d_hardcoded_status.last_stage = 1;
-        g3d_hardcoded_status.last_error = 0;
-
-        if (!opp) {
-            ret = -EINVAL;
-            goto err;
-        }
-
-        g3d_hardcoded_status.anchor_clock_khz = opp->acpm_anchor_khz;
-        g3d_hardcoded_status.target_voltage_uv = opp->voltage_uv;
-
-        ret = cal_g3d_set_acpm_anchor(clk);
-        if (ret)
-            goto err;
-        g3d_hardcoded_status.last_stage = 2;
-        g3d_hardcoded_status.actual_voltage_uv =
-            gpu_get_cur_voltage(platform);
-
-        if (opp->voltage_uv && opp->clock_khz >= opp->acpm_anchor_khz) {
-            ret = gpu_set_hardcoded_voltage(platform, opp->voltage_uv);
-            if (ret)
-                goto err;
-            g3d_hardcoded_status.last_stage = 3;
-        }
-
-        ret = cal_g3d_set_pll_hardcoded(clk);
-        if (ret)
-            goto err;
-        g3d_hardcoded_status.last_stage = 4;
-
-        g3d_hardcoded_status.actual_clock_khz =
-            (int)cal_g3d_get_rate_exact();
-        cal_g3d_get_pll_pms(&g3d_hardcoded_status.pll_m,
-                            &g3d_hardcoded_status.pll_p,
-                            &g3d_hardcoded_status.pll_s);
-
-        if (opp->voltage_uv && opp->clock_khz < opp->acpm_anchor_khz) {
-            ret = gpu_set_hardcoded_voltage(platform, opp->voltage_uv);
-            if (ret)
-                goto err;
-            g3d_hardcoded_status.last_stage = 5;
-        }
-
-        g3d_hardcoded_status.actual_voltage_uv =
-            gpu_get_cur_voltage(platform);
-    }
-#else
-    ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id, clk);
-    if (ret)
-        goto err;
-#endif
-
-#ifdef CONFIG_DEBUG_SNAPSHOT_FREQ
-    if (platform->gpu_dss_freq_id)
-#ifdef CONFIG_SOC_EXYNOS9820
-        dbg_snapshot_freq_misc(platform->gpu_dss_freq_id,
-                               platform->cur_clock, clk, DSS_FLAG_OUT);
-#else
-        dbg_snapshot_freq(platform->gpu_dss_freq_id,
-                          platform->cur_clock, clk, DSS_FLAG_OUT);
-#endif
-#endif
-
-#if defined(CONFIG_SOC_EXYNOS8895)
-    platform->cur_clock = (int)cal_g3d_get_rate_exact();
-    g3d_hardcoded_status.actual_clock_khz = platform->cur_clock;
-    g3d_hardcoded_status.actual_voltage_uv = gpu_get_cur_voltage(platform);
-    g3d_hardcoded_status.last_stage = 6;
-#else
-    platform->cur_clock = cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-#endif
-    if (platform->cur_clock != clk) {
-        GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-                "G3D hardcoded clock verify failed requested=%d actual=%d kHz\n",
-                clk, platform->cur_clock);
-        ret = -EIO;
-        goto err;
-    }
-
-    GPU_LOG(DVFS_DEBUG, LSI_CLOCK_VALUE, clk, platform->cur_clock,
-            "[id: %x] clock set: %d, clock get: %d\n",
-            platform->g3d_cmu_cal_id, clk, platform->cur_clock);
+	GPU_LOG(DVFS_DEBUG, LSI_CLOCK_VALUE, clk, platform->cur_clock,
+		"[id: %x] clock set: %d, clock get: %d\n",
+		platform->g3d_cmu_cal_id, clk, platform->cur_clock);
 
 #ifdef CONFIG_MALI_RT_PM
 err:
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (ret)
-        g3d_hardcoded_status.last_error = ret;
-#endif
-    if (platform->exynos_pm_domain)
-        mutex_unlock(&platform->exynos_pm_domain->access_lock);
-#else
-err:
-#if defined(CONFIG_SOC_EXYNOS8895)
-    if (ret)
-        g3d_hardcoded_status.last_error = ret;
-#endif
+	if (platform->exynos_pm_domain)
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
 #endif /* CONFIG_MALI_RT_PM */
-    return ret;
+	return ret;
 }
 
 int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock)
@@ -565,11 +207,8 @@ int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock)
 		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_SET);
 #endif /* CONFIG_MALI_PM_QOS */
 
-	if (platform->g3d_cmu_cal_id) {
-		ret = gpu_set_dvfs_using_calapi(platform, clock);
-		if (ret)
-			return ret;
-	}
+	if (platform->g3d_cmu_cal_id)
+		gpu_set_dvfs_using_calapi(platform, clock);
 
 #ifdef CONFIG_MALI_PM_QOS
 	if (!is_up)	/* is_down */
@@ -936,20 +575,7 @@ int gpu_asv_calibration_start(void)
 
 int gpu_get_cur_voltage(struct exynos_context *platform)
 {
-#ifdef CONFIG_REGULATOR
-	int voltage;
-
-	if (!g3d_hardcoded_regulator)
-		return 0;
-
-	voltage = regulator_get_voltage(g3d_hardcoded_regulator);
-	if (voltage > 0 && platform)
-		platform->cur_voltage = voltage;
-
-	return voltage > 0 ? voltage : 0;
-#else
 	return 0;
-#endif
 }
 int *get_mif_table(int *size)
 {
@@ -978,24 +604,6 @@ int gpu_control_module_init(struct kbase_device *kbdev)
 	}
 #endif
 
-#ifdef CONFIG_REGULATOR
-	if (!g3d_hardcoded_regulator) {
-		g3d_hardcoded_regulator = regulator_get(kbdev->dev, "vdd_g3d");
-		if (IS_ERR(g3d_hardcoded_regulator)) {
-			GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-				"G3D hardcoded: vdd_g3d regulator unavailable (%ld); voltage override disabled\n",
-				PTR_ERR(g3d_hardcoded_regulator));
-			g3d_hardcoded_regulator = NULL;
-			g3d_hardcoded_status.regulator_ready = 0;
-		} else {
-			g3d_hardcoded_status.regulator_ready = 1;
-			GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-				"G3D hardcoded: vdd_g3d regulator acquired, current=%d uV\n",
-				regulator_get_voltage(g3d_hardcoded_regulator));
-		}
-	}
-#endif
-
 	return 0;
 }
 
@@ -1004,13 +612,6 @@ void gpu_control_module_term(struct kbase_device *kbdev)
 	struct exynos_context *platform = (struct exynos_context *)kbdev->platform_context;
 	if (!platform)
 		return;
-
-#ifdef CONFIG_REGULATOR
-	if (g3d_hardcoded_regulator) {
-		regulator_put(g3d_hardcoded_regulator);
-		g3d_hardcoded_regulator = NULL;
-	}
-#endif
 
 #ifdef CONFIG_MALI_RT_PM
 	platform->exynos_pm_domain = NULL;

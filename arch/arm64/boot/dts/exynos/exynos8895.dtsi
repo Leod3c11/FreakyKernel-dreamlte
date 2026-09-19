@@ -784,7 +784,6 @@
 		             <0 59 0>;
 		interrupt-names = "JOB", "MMU", "GPU";
 		g3d_cmu_cal_id = <ACPM_DVFS_G3D>;
-		vdd_g3d-supply = <&buck6_reg>;
 		samsung,power-domain = <&pd_g3d>;
 		g3d_genpd_name = "pd-g3d"; /*KC: pg-g3d, LT,MK: pd-embedded_g3d*/
 		#cooling-cells = <2>; /* min followed by max */
@@ -819,7 +818,7 @@
 		gpu_dynamic_abb = <0>;
 		gpu_early_clk_gating = <0>;
 		gpu_dvs = <0>;
-		gpu_inter_frame_pm = <0>; /* keep custom PLL state across frames */
+		gpu_inter_frame_pm = <1>;
 		gpu_perf_gathering = <0>;
 		gpu_runtime_pm_delay_time = <50>;
 		gpu_dvfs_polling_time = <30>;

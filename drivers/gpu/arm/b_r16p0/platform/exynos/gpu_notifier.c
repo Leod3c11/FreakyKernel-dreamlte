@@ -78,15 +78,6 @@ static int gpu_tmu_notifier(struct notifier_block *notifier,
 #ifdef CONFIG_MALI_DVFS
 		gpu_dvfs_clock_lock(GPU_DVFS_MAX_LOCK, TMU_LOCK, frequency);
 #endif
-#if defined(CONFIG_SOC_EXYNOS8895)
-		/*
-		 * Exact manual OC must never block a thermal throttle/trip.
-		 * Drop immediately back to the stock ACPM DVFS path at the
-		 * thermal frequency. The user can re-enter exact mode manually.
-		 */
-		if (gpu_control_exact_clock_active())
-			gpu_control_drop_exact_to_stock(pkbdev, frequency);
-#endif
 #if defined(CONFIG_EXYNOS_SNAPSHOT_THERMAL)
 		exynos_ss_thermal(NULL, 0, cooling_device_name, frequency);
 #elif defined(CONFIG_DEBUG_SNAPSHOT_THERMAL)
@@ -293,11 +284,6 @@ static int pm_callback_dvfs_on(struct kbase_device *kbdev)
 static int pm_callback_runtime_on(struct kbase_device *kbdev)
 {
 	struct exynos_context *platform = (struct exynos_context *) kbdev->platform_context;
-#if defined(CONFIG_MALI_DVFS) && defined(CONFIG_SOC_EXYNOS8895)
-	int restore_clk;
-	int restore_ret;
-#endif
-
 	if (!platform)
 		return -ENODEV;
 
@@ -308,25 +294,6 @@ static int pm_callback_runtime_on(struct kbase_device *kbdev)
 #endif
 	gpu_dvfs_start_env_data_gathering(kbdev);
 	platform->power_status = true;
-
-#if defined(CONFIG_MALI_DVFS) && defined(CONFIG_SOC_EXYNOS8895)
-	/* Re-apply source-defined PMS after the G3D power domain returns.
-	 * A request made while G3D was gated has priority over the old step. */
-	if (platform->dvfs_status && platform->step >= 0 &&
-	    platform->step < platform->table_size) {
-		restore_clk = platform->dvfs_pending ?
-			platform->dvfs_pending : platform->table[platform->step].clock;
-		restore_ret = gpu_set_target_clk_vol(restore_clk, false);
-
-		if (restore_ret) {
-			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"runtime-on hardcoded G3D restore %d kHz failed (%d)\n",
-				restore_clk, restore_ret);
-		} else {
-			platform->dvfs_pending = 0;
-		}
-	}
-#endif
 #if 0
 #ifdef CONFIG_MALI_DVFS
 #ifdef CONFIG_MALI_SEC_CL_BOOST
