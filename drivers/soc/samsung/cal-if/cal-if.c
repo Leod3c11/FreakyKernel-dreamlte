@@ -103,11 +103,16 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 			rate, opp->acpm_key_khz, fw_rate, pll_rate,
 			opp->pll_m, opp->pll_p, opp->pll_s);
 
-		if (fw_rate != opp->acpm_key_khz && fw_rate != rate) {
-			pr_err("G3D hardcoded: ACPM readback mismatch logical=%lu key=%u fw=%lu\n",
-			       rate, opp->acpm_key_khz, fw_rate);
-			return -EIO;
-		}
+		/*
+		 * This Exynos8895 firmware returns 0 from exynos_acpm_get_rate() for
+		 * G3D even after a successful set-rate transaction.  Treat that value
+		 * as diagnostic only.  The authoritative success condition is the
+		 * physical PLL_G3D readback, which comes from the live registers.
+		 */
+		if (fw_rate && fw_rate != opp->acpm_key_khz && fw_rate != rate)
+			pr_warn("G3D hardcoded: ACPM diagnostic readback logical=%lu key=%u fw=%lu\n",
+				rate, opp->acpm_key_khz, fw_rate);
+
 		if (pll_rate != rate) {
 			pr_err("G3D hardcoded: physical PLL mismatch logical=%lu actual=%lu kHz\n",
 			       rate, pll_rate);
@@ -170,13 +175,21 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 	if (IS_ACPM_VCLK(id) &&
 	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
 		const struct exynos8895_g3d_hardcoded_opp *opp;
-		unsigned long fw_rate;
+		unsigned int pll_id;
+		unsigned long pll_rate;
 
-		fw_rate = exynos_acpm_get_rate(EXYNOS8895_G3D_ACPM_INDEX);
-		opp = exynos8895_g3d_find_opp_by_acpm_key(fw_rate);
-		if (opp)
-			return opp->clock_khz;
-		opp = exynos8895_g3d_find_opp(fw_rate);
+		/*
+		 * Do not use exynos_acpm_get_rate() for G3D readback on 8895.
+		 * This firmware reports 0 there while PLL_G3D is correctly running.
+		 * Read the physical PLL and map it back to the source-owned logical
+		 * table instead.  This makes cur_clock reflect actual hardware.
+		 */
+		pll_id = cmucal_get_id("PLL_G3D");
+		if (pll_id == INVALID_CLK_ID)
+			return 0;
+
+		pll_rate = ra_recalc_rate(pll_id) / 1000UL;
+		opp = exynos8895_g3d_find_opp(pll_rate);
 		return opp ? opp->clock_khz : 0;
 	}
 #endif
