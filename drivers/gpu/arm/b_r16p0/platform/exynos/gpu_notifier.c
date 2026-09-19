@@ -78,6 +78,15 @@ static int gpu_tmu_notifier(struct notifier_block *notifier,
 #ifdef CONFIG_MALI_DVFS
 		gpu_dvfs_clock_lock(GPU_DVFS_MAX_LOCK, TMU_LOCK, frequency);
 #endif
+#if defined(CONFIG_SOC_EXYNOS8895)
+		/*
+		 * Exact manual OC must never block a thermal throttle/trip.
+		 * Drop immediately back to the stock ACPM DVFS path at the
+		 * thermal frequency. The user can re-enter exact mode manually.
+		 */
+		if (gpu_control_exact_clock_active())
+			gpu_control_drop_exact_to_stock(pkbdev, frequency);
+#endif
 #if defined(CONFIG_EXYNOS_SNAPSHOT_THERMAL)
 		exynos_ss_thermal(NULL, 0, cooling_device_name, frequency);
 #elif defined(CONFIG_DEBUG_SNAPSHOT_THERMAL)

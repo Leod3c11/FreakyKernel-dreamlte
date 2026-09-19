@@ -123,6 +123,89 @@ unsigned long cal_clk_getrate(unsigned int id)
 	return ret;
 }
 
+/*
+ * Exynos8895 exact G3D PLL control.
+ *
+ * ACPM exposes nominal DVFS rates. This helper validates that the requested
+ * kHz value is exactly representable by PLL_G3D before touching hardware,
+ * then programs the physical PLL through the existing CAL RA layer.
+ */
+int cal_g3d_validate_rate_exact(unsigned long rate)
+{
+	unsigned int pll_id;
+	unsigned int fin;
+	struct cmucal_clk *clk;
+	struct cmucal_pll *pll;
+	struct cmucal_pll_table table;
+	int ret;
+
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (pll_id == INVALID_CLK_ID)
+		return -ENODEV;
+
+	clk = cmucal_get_node(pll_id);
+	if (!clk || !IS_PLL(clk->id))
+		return -ENODEV;
+
+	pll = to_clk_pll(clk);
+	if (IS_FIXED_RATE(clk->pid))
+		fin = ra_get_value(clk->pid);
+	else
+		fin = FIN_HZ_26M;
+
+	ret = pll_find_table(pll, &table, fin, rate);
+	if (ret)
+		return ret;
+
+	/* Reject the nearest integer-N result: exact means exact in Hz. */
+	if (table.rate != khz_to_hz(rate))
+		return -ERANGE;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_validate_rate_exact);
+
+int cal_g3d_set_rate_exact(unsigned long rate)
+{
+	unsigned int pll_id;
+	unsigned long actual;
+	int ret;
+
+	ret = cal_g3d_validate_rate_exact(rate);
+	if (ret)
+		return ret;
+
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (pll_id == INVALID_CLK_ID)
+		return -ENODEV;
+
+	ret = ra_set_rate(pll_id, rate);
+	if (ret)
+		return ret;
+
+	actual = ra_recalc_rate(pll_id) / 1000;
+	if (actual != rate) {
+		pr_err("G3D exact clock verify failed: requested=%lu actual=%lu kHz\n",
+		       rate, actual);
+		return -EIO;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_set_rate_exact);
+
+unsigned long cal_g3d_get_rate_exact(void)
+{
+	unsigned int pll_id;
+
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (pll_id == INVALID_CLK_ID)
+		return 0;
+
+	return ra_recalc_rate(pll_id) / 1000;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_get_rate_exact);
+
 int cal_clk_enable(unsigned int id)
 {
 	int ret = 0;

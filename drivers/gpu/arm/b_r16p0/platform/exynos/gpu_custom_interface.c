@@ -96,6 +96,22 @@ static ssize_t show_clock(struct device *dev, struct device_attribute *attr, cha
 	return ret;
 }
 
+static ssize_t show_clock_exact(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct exynos_context *platform =
+		(struct exynos_context *)pkbdev->platform_context;
+	int clock = 0;
+
+	if (!platform)
+		return -ENODEV;
+
+	if (gpu_control_is_power_on(pkbdev) == 1)
+		clock = gpu_get_cur_clock_exact(platform);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", clock);
+}
+
 static ssize_t set_clock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	unsigned int clk = 0;
@@ -127,6 +143,9 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 	}
 
 	if (clk == 0) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+		gpu_control_restore_clock_exact(pkbdev);
+#endif
 		kbase_pm_set_policy(pkbdev, prev_policy);
 		platform->tmu_status = prev_tmu_status;
 #ifdef CONFIG_MALI_DVFS
@@ -142,12 +161,31 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 				break;
 			}
 		}
+#if !defined(CONFIG_SOC_EXYNOS8895)
 		platform->tmu_status = false;
+#endif
 #ifdef CONFIG_MALI_DVFS
 		if (platform->dvfs_status)
 			gpu_dvfs_on_off(false);
 #endif /* CONFIG_MALI_DVFS */
+#if defined(CONFIG_SOC_EXYNOS8895)
+		ret = gpu_control_set_clock_exact(pkbdev, clk);
+		if (ret) {
+			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+				"%s: exact G3D clock %u kHz failed (%d)\n",
+				__func__, clk, ret);
+#ifdef CONFIG_MALI_DVFS
+			if (prev_dvfs_status && !platform->dvfs_status)
+				gpu_dvfs_on_off(true);
+#endif
+			platform->tmu_status = prev_tmu_status;
+			kbase_pm_set_policy(pkbdev, prev_policy);
+			cur_state = false;
+			return ret;
+		}
+#else
 		gpu_set_target_clk_vol(clk, false);
+#endif
 		cur_state = true;
 	}
 
@@ -1370,6 +1408,7 @@ static ssize_t show_cl_boost_disable(struct device *dev, struct device_attribute
  */
 
 DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
+DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
 DEVICE_ATTR(power_state, S_IRUGO, show_power_state, NULL);
 DEVICE_ATTR(asv_table, S_IRUGO, show_asv_table, NULL);
@@ -1929,6 +1968,11 @@ int gpu_create_sysfs_file(struct device *dev)
 		goto out;
 	}
 
+	if (device_create_file(dev, &dev_attr_clock_exact)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_exact]\n");
+		goto out;
+	}
+
 	if (device_create_file(dev, &dev_attr_vol)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [vol]\n");
 		goto out;
@@ -2111,6 +2155,7 @@ out:
 void gpu_remove_sysfs_file(struct device *dev)
 {
 	device_remove_file(dev, &dev_attr_clock);
+	device_remove_file(dev, &dev_attr_clock_exact);
 	device_remove_file(dev, &dev_attr_vol);
 	device_remove_file(dev, &dev_attr_power_state);
 	device_remove_file(dev, &dev_attr_asv_table);
