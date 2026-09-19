@@ -152,7 +152,13 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 #endif
 #endif
 
-	cal_dfs_set_rate(platform->g3d_cmu_cal_id, clk);
+	ret = cal_dfs_set_rate(platform->g3d_cmu_cal_id, clk);
+	if (ret) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D hardcoded CAL transition %d kHz failed (%d)\n",
+			clk, ret);
+		goto err;
+	}
 
 #ifdef CONFIG_DEBUG_SNAPSHOT_FREQ
 	if (platform->gpu_dss_freq_id)
@@ -164,6 +170,13 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 #endif
 
 	platform->cur_clock = cal_dfs_get_rate(platform->g3d_cmu_cal_id);
+	if (platform->cur_clock != clk) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D hardcoded logical readback mismatch request=%d actual=%d\n",
+			clk, platform->cur_clock);
+		ret = -EIO;
+		goto err;
+	}
 
 	GPU_LOG(DVFS_DEBUG, LSI_CLOCK_VALUE, clk, platform->cur_clock,
 		"[id: %x] clock set: %d, clock get: %d\n",
@@ -207,8 +220,11 @@ int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock)
 		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_SET);
 #endif /* CONFIG_MALI_PM_QOS */
 
-	if (platform->g3d_cmu_cal_id)
-		gpu_set_dvfs_using_calapi(platform, clock);
+	if (platform->g3d_cmu_cal_id) {
+		ret = gpu_set_dvfs_using_calapi(platform, clock);
+		if (ret)
+			return ret;
+	}
 
 #ifdef CONFIG_MALI_PM_QOS
 	if (!is_up)	/* is_down */

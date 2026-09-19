@@ -39,6 +39,10 @@
 #endif
 
 extern struct kbase_device *pkbdev;
+#if defined(CONFIG_SOC_EXYNOS8895)
+extern unsigned long cal_g3d_get_pll_rate_exact(void);
+extern int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s);
+#endif
 
 int gpu_pmqos_dvfs_min_lock(int level)
 {
@@ -217,6 +221,24 @@ static ssize_t set_clock(struct device *dev, struct device_attribute *attr, cons
 
 	return count;
 }
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+static ssize_t show_clock_exact(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_pll_rate_exact());
+}
+
+static ssize_t show_pll_pms(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned int m = 0, p = 0, s = 0;
+	int ret;
+
+	ret = cal_g3d_get_pll_pms(&m, &p, &s);
+	if (ret)
+		return ret;
+	return snprintf(buf, PAGE_SIZE, "M=%u P=%u S=%u\n", m, p, s);
+}
+#endif
 
 static ssize_t show_vol(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -1434,6 +1456,10 @@ static ssize_t show_cl_boost_disable(struct device *dev, struct device_attribute
  */
 
 DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
+#if defined(CONFIG_SOC_EXYNOS8895)
+DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
+DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
+#endif
 DEVICE_ATTR(vol, S_IRUGO, show_vol, NULL);
 DEVICE_ATTR(power_state, S_IRUGO, show_power_state, NULL);
 DEVICE_ATTR(asv_table, S_IRUGO, show_asv_table, NULL);
@@ -1992,6 +2018,16 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock]\n");
 		goto out;
 	}
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (device_create_file(dev, &dev_attr_clock_exact)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_exact]\n");
+		goto out;
+	}
+	if (device_create_file(dev, &dev_attr_pll_pms)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
+		goto out;
+	}
+#endif
 
 	if (device_create_file(dev, &dev_attr_vol)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [vol]\n");
@@ -2175,6 +2211,10 @@ out:
 void gpu_remove_sysfs_file(struct device *dev)
 {
 	device_remove_file(dev, &dev_attr_clock);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	device_remove_file(dev, &dev_attr_clock_exact);
+	device_remove_file(dev, &dev_attr_pll_pms);
+#endif
 	device_remove_file(dev, &dev_attr_vol);
 	device_remove_file(dev, &dev_attr_power_state);
 	device_remove_file(dev, &dev_attr_asv_table);

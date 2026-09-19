@@ -142,7 +142,11 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 #endif
 
 #ifdef CONFIG_MALI_DVFS
-	gpu_control_set_dvfs(kbdev, target_clk);
+	ret = gpu_control_set_dvfs(kbdev, target_clk);
+	if (ret) {
+		mutex_unlock(&platform->gpu_clock_lock);
+		return ret;
+	}
 #endif
 	ret = gpu_update_cur_level(platform);
 

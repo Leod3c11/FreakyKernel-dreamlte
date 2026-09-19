@@ -1,4 +1,5 @@
 #include <linux/module.h>
+#include <linux/io.h>
 #include <linux/exynos-ss.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
@@ -63,15 +64,60 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
 	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
-		if (!exynos8895_g3d_find_opp(rate)) {
-			pr_err("G3D hardcoded: refusing unsupported rate %lu kHz\n", rate);
+		const struct exynos8895_g3d_hardcoded_opp *opp;
+		unsigned long fw_rate, pll_rate;
+		unsigned int pll_id;
+
+		opp = exynos8895_g3d_find_opp(rate);
+		if (!opp) {
+			pr_err("G3D hardcoded: refusing unsupported logical rate %lu kHz\n", rate);
 			return -EINVAL;
 		}
+
 		ret = exynos8895_g3d_hardcoded_apply();
 		if (ret) {
 			pr_err("G3D hardcoded: SRAM apply failed before %lu kHz (%d)\n", rate, ret);
 			return ret;
 		}
+
+		/*
+		 * ACPM firmware keeps Samsung's nominal frequency as the slot key.
+		 * The source-owned FVMap row supplies the voltage and PMS that the
+		 * selected slot actually programs into PLL_G3D.
+		 */
+		ret = exynos_acpm_set_rate(EXYNOS8895_G3D_ACPM_INDEX,
+					  opp->acpm_key_khz);
+		if (ret) {
+			pr_err("G3D hardcoded: ACPM key %u for %lu kHz failed (%d)\n",
+			       opp->acpm_key_khz, rate, ret);
+			return ret;
+		}
+
+		fw_rate = exynos_acpm_get_rate(EXYNOS8895_G3D_ACPM_INDEX);
+		pll_id = cmucal_get_id("PLL_G3D");
+		if (pll_id == INVALID_CLK_ID)
+			return -ENODEV;
+		pll_rate = ra_recalc_rate(pll_id) / 1000UL;
+
+		pr_info("G3D hardcoded transition: logical=%lu key=%u fw=%lu pll=%lu kHz PMS=%u/%u/%u\n",
+			rate, opp->acpm_key_khz, fw_rate, pll_rate,
+			opp->pll_m, opp->pll_p, opp->pll_s);
+
+		if (fw_rate != opp->acpm_key_khz && fw_rate != rate) {
+			pr_err("G3D hardcoded: ACPM readback mismatch logical=%lu key=%u fw=%lu\n",
+			       rate, opp->acpm_key_khz, fw_rate);
+			return -EIO;
+		}
+		if (pll_rate != rate) {
+			pr_err("G3D hardcoded: physical PLL mismatch logical=%lu actual=%lu kHz\n",
+			       rate, pll_rate);
+			return -EIO;
+		}
+
+		vclk = cmucal_get_node(id);
+		if (vclk)
+			vclk->vrate = rate;
+		return 0;
 	}
 #endif
 
@@ -122,8 +168,17 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
 	if (IS_ACPM_VCLK(id) &&
-	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
-		return exynos_acpm_get_rate(EXYNOS8895_G3D_ACPM_INDEX);
+	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
+		const struct exynos8895_g3d_hardcoded_opp *opp;
+		unsigned long fw_rate;
+
+		fw_rate = exynos_acpm_get_rate(EXYNOS8895_G3D_ACPM_INDEX);
+		opp = exynos8895_g3d_find_opp_by_acpm_key(fw_rate);
+		if (opp)
+			return opp->clock_khz;
+		opp = exynos8895_g3d_find_opp(fw_rate);
+		return opp ? opp->clock_khz : 0;
+	}
 #endif
 
 	ret = vclk_recalc_rate(id);
@@ -148,6 +203,42 @@ int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 
 	return ret;
 }
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+unsigned long cal_g3d_get_pll_rate_exact(void)
+{
+	unsigned int pll_id;
+
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (pll_id == INVALID_CLK_ID)
+		return 0;
+	return ra_recalc_rate(pll_id) / 1000UL;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_get_pll_rate_exact);
+
+int cal_g3d_get_pll_pms(unsigned int *m, unsigned int *p, unsigned int *s)
+{
+	struct cmucal_clk *clk;
+	struct cmucal_pll *pll;
+	unsigned int pll_id, con0;
+
+	if (!m || !p || !s)
+		return -EINVAL;
+	pll_id = cmucal_get_id("PLL_G3D");
+	if (pll_id == INVALID_CLK_ID)
+		return -ENODEV;
+	clk = cmucal_get_node(pll_id);
+	if (!clk || !IS_PLL(clk->id) || !clk->pll_con0)
+		return -ENODEV;
+	pll = to_clk_pll(clk);
+	con0 = __raw_readl(clk->pll_con0);
+	*m = (con0 >> pll->m_shift) & ((1U << pll->m_width) - 1U);
+	*p = (con0 >> pll->p_shift) & ((1U << pll->p_width) - 1U);
+	*s = (con0 >> pll->s_shift) & ((1U << pll->s_width) - 1U);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cal_g3d_get_pll_pms);
+#endif
 
 int cal_clk_setrate(unsigned int id, unsigned long rate)
 {

@@ -301,21 +301,27 @@ int exynos8895_g3d_hardcoded_apply(void)
 		unsigned int new_pms = EXYNOS8895_G3D_PACK_PMS(
 			opp->pll_m, opp->pll_p, opp->pll_s);
 
-		sram_rv->table[i].rate = opp->clock_khz;
+		/*
+		 * Keep Samsung's nominal rate key in the live FVMap.  ACPM uses that
+		 * key to select the slot; the slot's voltage/PMS own the real output.
+		 */
+		sram_rv->table[i].rate = opp->acpm_key_khz;
 		sram_rv->table[i].volt = opp->voltage_uv;
 		pll->pms[i] = (old_pms & ~EXYNOS8895_G3D_PMS_MASK) | new_pms;
 
 		if (copy_rv) {
-			copy_rv->table[i].rate = opp->clock_khz;
+			copy_rv->table[i].rate = opp->acpm_key_khz;
 			copy_rv->table[i].volt = opp->voltage_uv;
 		}
 	}
 
 	exynos8895_g3d_sram_active = true;
 	exynos8895_g3d_hardcoded_sync_cal();
-	pr_info("G3D hardcoded: ACPM SRAM programmed idx=4 slots=9 range=%u..%u kHz cal=%u\n",
+	pr_info("G3D hardcoded: ACPM SRAM programmed idx=4 slots=9 logical=%u..%u keys=%u..%u cal=%u\n",
 		exynos8895_g3d_opp_table[0].clock_khz,
 		exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz,
+		exynos8895_g3d_opp_table[0].acpm_key_khz,
+		exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].acpm_key_khz,
 		exynos8895_g3d_cal_active ? 1 : 0);
 	return 0;
 }

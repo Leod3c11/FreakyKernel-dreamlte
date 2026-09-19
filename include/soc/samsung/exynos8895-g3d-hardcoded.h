@@ -15,8 +15,9 @@
  * nine G3D levels in SRAM.  Changing the slot count would change the FVMap
  * layout and is intentionally rejected.
  *
- * clock_khz  : rate requested through ACPM_DVFS_G3D
- * voltage_uv : absolute live-FVMap voltage; 0 preserves the firmware value
+ * clock_khz    : logical/physical clock exposed to the Mali driver
+ * acpm_key_khz : stock Samsung rate key used only to select the ACPM slot
+ * voltage_uv   : absolute live-FVMap voltage for that selected slot
  * pll_m/p/s  : raw PLL_G3D PMS fields written into the matching SRAM slot
  *
  * For PLL_1052X with FIN=26 MHz:
@@ -50,6 +51,7 @@
 
 struct exynos8895_g3d_hardcoded_opp {
 	unsigned int clock_khz;
+	unsigned int acpm_key_khz;
 	unsigned int voltage_uv;
 	unsigned int pll_m;
 	unsigned int pll_p;
@@ -77,16 +79,16 @@ struct exynos8895_g3d_hardcoded_opp {
  * data.  PMS values are exact and are applied by ACPM from its own SRAM.
  */
 static const struct exynos8895_g3d_hardcoded_opp exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT] = {
-	/* clock   volt      M    P  S   min max stay   MIF      little big */
-	{ 850000, 850000,   425, 13, 0,   44, 65, 1, 2093000,       0,   0 },
-	{ 800000, 825000,   400, 13, 0,   43, 65, 1, 2093000,       0,   0 },
-	{ 700000, 775000,   350, 13, 0,   39, 65, 1, 2093000,       0,   0 },
-	{ 572000, 681250,   176,  4, 1,   47, 65, 1, 2093000,       0,   0 },
-	{ 546000, 662500,   168,  4, 1,   40, 65, 1, 2002000,       0,   0 },
-	{ 455000, 650000,   140,  4, 1,   40, 65, 1, 2002000,       0,   0 },
-	{ 385000, 643750,   385, 13, 1,   42, 65, 1, 1794000,       0,   0 },
-	{ 338000, 637500,   104,  4, 1,   35, 65, 1, 1352000,       0,   0 },
-	{ 260000, 637500,   160,  4, 2,   35, 65, 1, 1352000,       0,   0 },
+	/* clock   key      volt      M    P  S   min max stay   MIF      little big */
+	{ 850000, 839000, 850000,   425, 13, 0,   44, 65, 1, 2093000,       0,   0 },
+	{ 800000, 764000, 825000,   400, 13, 0,   43, 65, 1, 2093000,       0,   0 },
+	{ 700000, 683000, 775000,   350, 13, 0,   39, 65, 1, 2093000,       0,   0 },
+	{ 572000, 572000, 681250,   176,  4, 1,   47, 65, 1, 2093000,       0,   0 },
+	{ 546000, 546000, 662500,   168,  4, 1,   40, 65, 1, 2002000,       0,   0 },
+	{ 455000, 455000, 650000,   140,  4, 1,   40, 65, 1, 2002000,       0,   0 },
+	{ 385000, 385000, 643750,   385, 13, 1,   42, 65, 1, 1794000,       0,   0 },
+	{ 338000, 338000, 637500,   104,  4, 1,   35, 65, 1, 1352000,       0,   0 },
+	{ 260000, 260000, 637500,   160,  4, 2,   35, 65, 1, 1352000,       0,   0 },
 };
 
 /* Thermal locks must always point at rates that actually exist above. */
@@ -101,6 +103,18 @@ exynos8895_g3d_find_opp(unsigned long clock_khz)
 
 	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
 		if (exynos8895_g3d_opp_table[i].clock_khz == clock_khz)
+			return &exynos8895_g3d_opp_table[i];
+
+	return NULL;
+}
+
+static inline const struct exynos8895_g3d_hardcoded_opp *
+exynos8895_g3d_find_opp_by_acpm_key(unsigned long acpm_key_khz)
+{
+	unsigned int i;
+
+	for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
+		if (exynos8895_g3d_opp_table[i].acpm_key_khz == acpm_key_khz)
 			return &exynos8895_g3d_opp_table[i];
 
 	return NULL;
