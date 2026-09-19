@@ -4,6 +4,8 @@
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
+#include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <soc/samsung/cal-if.h>
 #if defined(CONFIG_SOC_EXYNOS8895)
@@ -125,9 +127,6 @@ bool exynos8895_g3d_hardcoded_active(void)
 }
 EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_active);
 
-static const unsigned int exynos8895_g3d_stock_rate[EXYNOS8895_G3D_OPP_COUNT] = {
-	839000, 764000, 683000, 572000, 546000, 455000, 385000, 338000, 260000,
-};
 
 /* Exact PLL-derived aliases reported by the supplied PLL_G3D all_dump. */
 static const unsigned int exynos8895_g3d_stock_pll_rate[EXYNOS8895_G3D_OPP_COUNT] = {
@@ -395,6 +394,381 @@ EXPORT_SYMBOL_GPL(exynos8895_g3d_sram_debug_dump);
 
 #endif
 
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+/*
+ * Generic Exynos8895 ACPM/FVMap probe.
+ *
+ * READ ONLY.
+ */
+static struct dentry *exynos8895_soc_debugfs_root;
+
+static const char * const exynos8895_soc_domain_name[] = {
+	"dvfs_mif",
+	"dvfs_int",
+	"dvfs_cpucl0",
+	"dvfs_cpucl1",
+	"dvfs_g3d",
+	"dvfs_intcam",
+	"dvfs_cam",
+	"dvfs_disp",
+	"dvs_g3dm",
+	"dvs_cp",
+};
+
+#define EXYNOS8895_SOC_ACPM_DOMAINS \
+	(sizeof(exynos8895_soc_domain_name) / sizeof(exynos8895_soc_domain_name[0]))
+
+static bool exynos8895_fvmap_range_ok(unsigned int off, unsigned int bytes)
+{
+	if (off >= FVMAP_SIZE)
+		return false;
+	if (bytes > FVMAP_SIZE)
+		return false;
+	if (off > FVMAP_SIZE - bytes)
+		return false;
+	return true;
+}
+
+static int exynos8895_soc_fvmap_show(struct seq_file *m, void *unused)
+{
+	struct fvmap_header *header;
+	unsigned int domain_count;
+	unsigned int i, j, p;
+
+	if (!sram_fvmap_base) {
+		seq_puts(m, "ERROR sram_fvmap_base=unavailable\n");
+		return 0;
+	}
+
+	header = sram_fvmap_base;
+	domain_count = cmucal_get_list_size(ACPM_VCLK_TYPE);
+	if (domain_count > EXYNOS8895_SOC_ACPM_DOMAINS)
+		domain_count = EXYNOS8895_SOC_ACPM_DOMAINS;
+
+	seq_printf(m,
+		"EXYNOS8895_FVMAP size=%u domains=%u acpm_list=%u\n",
+		(unsigned int)FVMAP_SIZE, domain_count,
+		cmucal_get_list_size(ACPM_VCLK_TYPE));
+
+	for (i = 0; i < domain_count; i++) {
+		struct fvmap_header *h = &header[i];
+		struct rate_volt_header *rv;
+		struct clocks *clks;
+		struct vclk *vclk;
+		unsigned int rv_bytes;
+		unsigned int member_bytes;
+
+		vclk = cmucal_get_node(ACPM_VCLK_TYPE | i);
+
+		seq_printf(m,
+			"\n=== DOMAIN %u %s ===\n"
+			"id=0x%x vclk=%s\n"
+			"dvfs_type=0x%x levels=%u members=%u pll=%u mux=%u div=%u gate=%u init_lv=%u gearratio=%u\n"
+			"block_addr=%04x,%04x,%04x o_members=0x%x o_ratevolt=0x%x o_tables=0x%x\n",
+			i, exynos8895_soc_domain_name[i],
+			ACPM_VCLK_TYPE | i,
+			(vclk && vclk->name) ? vclk->name : "NULL",
+			h->dvfs_type, h->num_of_lv, h->num_of_members,
+			h->num_of_pll, h->num_of_mux, h->num_of_div,
+			h->num_of_gate, h->init_lv, h->gearratio,
+			h->block_addr[0], h->block_addr[1], h->block_addr[2],
+			h->o_members, h->o_ratevolt, h->o_tables);
+
+		rv_bytes = sizeof(struct rate_volt) * h->num_of_lv;
+		if (!exynos8895_fvmap_range_ok(h->o_ratevolt, rv_bytes)) {
+			seq_printf(m,
+				"ERROR ratevolt range off=0x%x bytes=%u outside FVMAP\n",
+				h->o_ratevolt, rv_bytes);
+			continue;
+		}
+
+		rv = sram_fvmap_base + h->o_ratevolt;
+		seq_puts(m, "LEVEL rate_khz volt_uv\n");
+		for (j = 0; j < h->num_of_lv; j++)
+			seq_printf(m, "%u %u %u\n",
+				j, rv->table[j].rate, rv->table[j].volt);
+
+		member_bytes = sizeof(unsigned short) * h->num_of_members;
+		if (!h->num_of_members)
+			continue;
+
+		if (!exynos8895_fvmap_range_ok(h->o_members, member_bytes)) {
+			seq_printf(m,
+				"ERROR members range off=0x%x bytes=%u outside FVMAP\n",
+				h->o_members, member_bytes);
+			continue;
+		}
+
+		clks = sram_fvmap_base + h->o_members;
+
+		seq_puts(m, "MEMBERS idx offset cal_id\n");
+		for (j = 0; j < h->num_of_members; j++) {
+			unsigned int cal_id = 0;
+
+			if (vclk && vclk->list && j < vclk->num_list)
+				cal_id = vclk->list[j];
+
+			seq_printf(m, "%u 0x%04x 0x%x\n",
+				j, clks->addr[j], cal_id);
+		}
+
+		for (p = 0; p < h->num_of_pll && p < h->num_of_members; p++) {
+			struct pll_header *pll;
+			unsigned int off = clks->addr[p];
+			unsigned int levels;
+			unsigned int bytes;
+
+			if (!exynos8895_fvmap_range_ok(off,
+						sizeof(struct pll_header))) {
+				seq_printf(m,
+					"PLL%u ERROR header offset=0x%x outside FVMAP\n",
+					p, off);
+				continue;
+			}
+
+			pll = sram_fvmap_base + off;
+			levels = pll->level;
+			if (levels > h->num_of_lv)
+				levels = h->num_of_lv;
+
+			bytes = sizeof(struct pll_header) +
+				sizeof(unsigned int) * levels;
+			if (!exynos8895_fvmap_range_ok(off, bytes)) {
+				seq_printf(m,
+					"PLL%u ERROR offset=0x%x bytes=%u outside FVMAP\n",
+					p, off, bytes);
+				continue;
+			}
+
+			seq_printf(m,
+				"PLL%u offset=0x%x addr=0x%08x lock_off=0x%x levels=%u raw_levels=%u\n",
+				p, off, pll->addr, pll->o_lock, levels, pll->level);
+			seq_puts(m, "PLL_LEVEL idx raw_pms M P S\n");
+
+			for (j = 0; j < levels; j++) {
+				unsigned int raw = pll->pms[j];
+				unsigned int pm = (raw >> 16) & 0x3ffU;
+				unsigned int pp = (raw >> 8) & 0x3fU;
+				unsigned int ps = raw & 0x7U;
+
+				seq_printf(m, "%u 0x%08x %u %u %u\n",
+					j, raw, pm, pp, ps);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int exynos8895_soc_live_show(struct seq_file *m, void *unused)
+{
+	unsigned int count;
+	unsigned int i;
+
+	count = cmucal_get_list_size(ACPM_VCLK_TYPE);
+	if (count > EXYNOS8895_SOC_ACPM_DOMAINS)
+		count = EXYNOS8895_SOC_ACPM_DOMAINS;
+
+	seq_puts(m, "idx name id current_khz min_khz max_khz levels\n");
+	for (i = 0; i < count; i++) {
+		unsigned int id = ACPM_VCLK_TYPE | i;
+		unsigned long cur = cal_dfs_get_rate(id);
+		unsigned long min = cal_dfs_get_min_freq(id);
+		unsigned long max = cal_dfs_get_max_freq(id);
+		unsigned int lv = cal_dfs_get_lv_num(id);
+
+		seq_printf(m, "%u %s 0x%x %lu %lu %lu %u\n",
+			i, exynos8895_soc_domain_name[i], id,
+			cur, min, max, lv);
+	}
+
+	return 0;
+}
+
+static int exynos8895_soc_fvmap_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, exynos8895_soc_fvmap_show, inode->i_private);
+}
+
+static int exynos8895_soc_live_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, exynos8895_soc_live_show, inode->i_private);
+}
+
+static const struct file_operations exynos8895_soc_fvmap_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_soc_fvmap_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static const struct file_operations exynos8895_soc_live_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_soc_live_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+
+static int exynos8895_soc_find_domain(const char *name)
+{
+	unsigned int i;
+
+	if (!name || !*name)
+		return -EINVAL;
+
+	for (i = 0; i < EXYNOS8895_SOC_ACPM_DOMAINS; i++) {
+		if (!strcmp(name, exynos8895_soc_domain_name[i]))
+			return i;
+
+		/* Friendly aliases for shell use. */
+		if (!strncmp(exynos8895_soc_domain_name[i], "dvfs_", 5) &&
+		    !strcmp(name, exynos8895_soc_domain_name[i] + 5))
+			return i;
+		if (!strncmp(exynos8895_soc_domain_name[i], "dvs_", 4) &&
+		    !strcmp(name, exynos8895_soc_domain_name[i] + 4))
+			return i;
+	}
+
+	return -ENOENT;
+}
+
+static bool exynos8895_soc_rate_supported(unsigned int id,
+					   unsigned long rate)
+{
+	unsigned long table[64];
+	int count;
+	int i;
+
+	memset(table, 0, sizeof(table));
+	count = cal_dfs_get_rate_table(id, table);
+	if (count <= 0 || count > ARRAY_SIZE(table))
+		return false;
+
+	for (i = 0; i < count; i++)
+		if (table[i] == rate)
+			return true;
+
+	return false;
+}
+
+static ssize_t exynos8895_soc_control_read(struct file *file,
+					    char __user *ubuf,
+					    size_t count, loff_t *ppos)
+{
+	static const char help[] =
+		"Exynos8895 SoC runtime control\n"
+		"WRITE commands:\n"
+		"  rate <domain> <kHz>\n"
+		"  margin <domain> <delta_uV>\n"
+		"\n"
+		"domains: mif int cpucl0 cpucl1 g3d intcam cam disp g3dm cp\n"
+		"\n"
+		"rate is accepted only when present in cal_dfs_get_rate_table().\n"
+		"margin uses cal_dfs_set_volt_margin(); it is a voltage DELTA, not absolute uV.\n"
+		"CPU/devfreq governors may change a requested rate again after this write.\n";
+
+	return simple_read_from_buffer(ubuf, count, ppos, help, sizeof(help) - 1);
+}
+
+static ssize_t exynos8895_soc_control_write(struct file *file,
+					     const char __user *ubuf,
+					     size_t count, loff_t *ppos)
+{
+	char buf[96];
+	char cmd[16];
+	char domain[24];
+	long value;
+	int idx;
+	unsigned int id;
+	int ret;
+
+	if (!count || count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+
+	if (sscanf(buf, "%15s %23s %ld", cmd, domain, &value) != 3)
+		return -EINVAL;
+
+	idx = exynos8895_soc_find_domain(domain);
+	if (idx < 0)
+		return idx;
+
+	id = ACPM_VCLK_TYPE | idx;
+
+	if (!strcmp(cmd, "rate")) {
+		if (value <= 0)
+			return -EINVAL;
+
+		if (!exynos8895_soc_rate_supported(id, value)) {
+			pr_err("Exynos8895 SoC control: unsupported rate domain=%s rate=%ld\n",
+			       domain, value);
+			return -EINVAL;
+		}
+
+		ret = cal_dfs_set_rate(id, value);
+		if (ret) {
+			pr_err("Exynos8895 SoC control: rate failed domain=%s rate=%ld ret=%d\n",
+			       domain, value, ret);
+			return ret;
+		}
+
+		pr_info("Exynos8895 SoC control: rate domain=%s requested=%ld actual=%lu\n",
+			domain, value, cal_dfs_get_rate(id));
+		return count;
+	}
+
+	if (!strcmp(cmd, "margin")) {
+		/*
+		 * Guard against catastrophic typo while still leaving a large
+		 * engineering range.  This is a DELTA applied by Samsung CAL/ACPM.
+		 */
+		if (value < -200000 || value > 200000)
+			return -ERANGE;
+
+		cal_dfs_set_volt_margin(id, value);
+		pr_info("Exynos8895 SoC control: margin domain=%s delta=%lduV\n",
+			domain, value);
+		return count;
+	}
+
+	return -EINVAL;
+}
+
+static const struct file_operations exynos8895_soc_control_fops = {
+	.owner = THIS_MODULE,
+	.read = exynos8895_soc_control_read,
+	.write = exynos8895_soc_control_write,
+	.llseek = default_llseek,
+};
+
+static void exynos8895_soc_debugfs_init(void)
+{
+	if (exynos8895_soc_debugfs_root)
+		return;
+
+	exynos8895_soc_debugfs_root =
+		debugfs_create_dir("exynos8895_soc", NULL);
+	if (!exynos8895_soc_debugfs_root)
+		return;
+
+	debugfs_create_file("fvmap", 0444, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_fvmap_fops);
+	debugfs_create_file("live", 0444, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_live_fops);
+	debugfs_create_file("control", 0600, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_control_fops);
+
+	pr_info("Exynos8895 SoC probe: debugfs ready at /sys/kernel/debug/exynos8895_soc\n");
+}
+#endif
+
 int fvmap_set_raw_voltage_table(unsigned int id, int uV)
 {
 	struct fvmap_header *fvmap_header;
@@ -564,6 +938,9 @@ int fvmap_init(void __iomem *sram_base)
 
 	fvmap_base = map_base;
 	sram_fvmap_base = sram_base;
+#if defined(CONFIG_SOC_EXYNOS8895)
+	exynos8895_soc_debugfs_init();
+#endif
 	pr_info("%s:fvmap initialize %pK\n", __func__, sram_base);
 
 	/* First snapshot the firmware headers/offsets, then replace G3D in both maps. */
