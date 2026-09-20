@@ -694,6 +694,11 @@ struct decon_device {
 	struct mutex			mutex;
 	spinlock_t			slock;
 	struct decon_vsync		vsync_info;
+
+	/* EXYNOS8895-DECON-PHYSICAL-TE-V4 */
+	u64				oc_te_last_ns;
+	u64				oc_te_period_ns;
+	u32				oc_te_rate_millihz;
 	/* EXYNOS8895-DISPLAY-TE-METER */
 	u64				te_window_start_ns;
 	u32				te_window_frames;

@@ -494,6 +494,31 @@ irqreturn_t decon_fb_isr_for_eint(int irq, void *dev_id)
 	struct decon_mode_info psr;
 	ktime_t timestamp = ktime_get();
 
+	/* EXYNOS8895-DECON-PHYSICAL-TE-V4-IRQ
+	 *
+	 * Measure actual panel TE at the DECON IRQ that backs the existing
+	 * /sys/devices/platform/12860000.decon_f/vsync node.
+	 * No DTS, panel command or DSI clock is modified here.
+	 */
+	{
+		u64 now_ns = (u64)ktime_to_ns(timestamp);
+		u64 last_ns = READ_ONCE(decon->oc_te_last_ns);
+
+		if (last_ns && now_ns > last_ns) {
+			u64 period_ns = now_ns - last_ns;
+
+			if (period_ns >= 4166666ULL &&
+			    period_ns <= 100000000ULL) {
+				WRITE_ONCE(decon->oc_te_period_ns, period_ns);
+				WRITE_ONCE(decon->oc_te_rate_millihz,
+					(u32)div64_u64(1000000000000ULL,
+						       period_ns));
+			}
+		}
+
+		WRITE_ONCE(decon->oc_te_last_ns, now_ns);
+	}
+
 	/* EXYNOS8895-DISPLAY-TE-METER-IRQ
 	 *
 	 * Physical refresh measurement: this IRQ is driven by the panel TE pin,
@@ -605,6 +630,36 @@ static ssize_t decon_vsync_show(struct device *dev,
 }
 
 static DEVICE_ATTR(vsync, S_IRUGO, decon_vsync_show, NULL);
+
+/* EXYNOS8895-DECON-PHYSICAL-TE-V4-SYSFS */
+static ssize_t decon_physical_refresh_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct decon_device *decon = dev_get_drvdata(dev);
+	u32 mhz;
+	u64 period;
+	u32 declared = 0;
+	u32 hs_clk = 0;
+
+	if (!decon)
+		return -ENODEV;
+
+	mhz = READ_ONCE(decon->oc_te_rate_millihz);
+	period = READ_ONCE(decon->oc_te_period_ns);
+
+	if (decon->lcd_info) {
+		declared = decon->lcd_info->fps;
+		hs_clk = decon->lcd_info->hs_clk;
+	}
+
+	return scnprintf(buf, PAGE_SIZE,
+		"physical_te=%u.%03uHz period_ns=%llu declared=%u hs_clk=%uMHz\n",
+		mhz / 1000U, mhz % 1000U,
+		(unsigned long long)period, declared, hs_clk);
+}
+
+static DEVICE_ATTR(refresh_diag, S_IRUGO,
+		   decon_physical_refresh_show, NULL);
 
 static ssize_t decon_refresh_diag_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
