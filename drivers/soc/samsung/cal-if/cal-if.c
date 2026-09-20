@@ -26,14 +26,13 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 }
 
 
-
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-    if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
-        return exynos8895_hc_exposed_max(GET_IDX(id));
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+		return exynos8895_hc_domain(GET_IDX(id))->policy_max_khz;
 #endif
-    return vclk_get_max_freq(id);
+	return vclk_get_max_freq(id);
 }
 
 
@@ -63,24 +62,6 @@ int cal_dfs_get_bigturbo_max_freq(unsigned int *table)
 
 int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 {
-#if defined(CONFIG_SOC_EXYNOS8895)
-    /*
-     * v7 exposes table_max to Linux, but keeps actual transitions above
-     * policy_max clamped until that domain has a validated direct engine.
-     */
-    if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id))) {
-        const struct exynos8895_hc_domain_desc *hc_d =
-            exynos8895_hc_domain(GET_IDX(id));
-
-        if (hc_d && rate > hc_d->policy_max_khz) {
-            pr_warn_ratelimited(
-                "EXYNOS8895-HC-V7: clamped unsafe transition %s %lu -> %u kHz\n",
-                hc_d->name, rate, hc_d->policy_max_khz);
-            rate = hc_d->policy_max_khz;
-        }
-    }
-#endif
-
 	struct vclk *vclk;
 	int ret;
 
