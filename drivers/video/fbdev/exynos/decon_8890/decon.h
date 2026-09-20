@@ -694,6 +694,10 @@ struct decon_device {
 	struct mutex			mutex;
 	spinlock_t			slock;
 	struct decon_vsync		vsync_info;
+	/* EXYNOS8895-DISPLAY-TE-METER */
+	u64				te_window_start_ns;
+	u32				te_window_frames;
+	u32				te_rate_millihz;
 	enum decon_state		state;
 
 #if defined(CONFIG_EXYNOS8890_BTS_OPTIMIZATION)

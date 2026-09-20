@@ -15,6 +15,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/exynos_iovmm.h>
 #include <linux/of_address.h>
+#include <linux/math64.h>
 
 #include <media/v4l2-subdev.h>
 
@@ -493,6 +494,37 @@ irqreturn_t decon_fb_isr_for_eint(int irq, void *dev_id)
 	struct decon_mode_info psr;
 	ktime_t timestamp = ktime_get();
 
+	/* EXYNOS8895-DISPLAY-TE-METER-IRQ
+	 *
+	 * Physical refresh measurement: this IRQ is driven by the panel TE pin,
+	 * not by the software fps field. Average 32 TE intervals to avoid jitter.
+	 */
+	{
+		u64 now_ns = (u64)ktime_to_ns(timestamp);
+
+		if (!decon->te_window_start_ns) {
+			decon->te_window_start_ns = now_ns;
+			decon->te_window_frames = 0;
+		} else {
+			decon->te_window_frames++;
+
+			if (decon->te_window_frames >= 32U) {
+				u64 elapsed_ns =
+					now_ns - decon->te_window_start_ns;
+
+				if (elapsed_ns)
+					decon->te_rate_millihz =
+						(u32)div64_u64(
+							(u64)decon->te_window_frames *
+							1000000000000ULL,
+							elapsed_ns);
+
+				decon->te_window_start_ns = now_ns;
+				decon->te_window_frames = 0;
+			}
+		}
+	}
+
 	DISP_SS_EVENT_LOG(DISP_EVT_TE_INTERRUPT, &decon->sd, timestamp);
 
 	spin_lock(&decon->slock);
@@ -574,6 +606,21 @@ static ssize_t decon_vsync_show(struct device *dev,
 
 static DEVICE_ATTR(vsync, S_IRUGO, decon_vsync_show, NULL);
 
+static ssize_t decon_refresh_diag_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct decon_device *decon = dev_get_drvdata(dev);
+	u32 mhz = READ_ONCE(decon->te_rate_millihz);
+	u32 declared = decon->lcd_info ? decon->lcd_info->fps : 0;
+
+	return scnprintf(buf, PAGE_SIZE,
+		"declared=%u physical_te=%u.%03uHz hs_clk=%uMHz\n",
+		declared, mhz / 1000U, mhz % 1000U,
+		decon->lcd_info ? decon->lcd_info->hs_clk : 0);
+}
+
+static DEVICE_ATTR(refresh_diag, S_IRUGO, decon_refresh_diag_show, NULL);
+
 static ssize_t decon_psr_info(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -593,6 +640,13 @@ int decon_f_create_vsync_thread(struct decon_device *decon)
 	ret = device_create_file(decon->dev, &dev_attr_vsync);
 	if (ret) {
 		decon_err("failed to create vsync file\n");
+		return ret;
+	}
+
+	ret = device_create_file(decon->dev, &dev_attr_refresh_diag);
+	if (ret) {
+		decon_err("failed to create refresh_diag file\n");
+		device_remove_file(decon->dev, &dev_attr_vsync);
 		return ret;
 	}
 
@@ -621,6 +675,7 @@ int decon_f_create_psr_thread(struct decon_device *decon)
 
 void decon_f_destroy_vsync_thread(struct decon_device *decon)
 {
+	device_remove_file(decon->dev, &dev_attr_refresh_diag);
 	device_remove_file(decon->dev, &dev_attr_vsync);
 }
 
