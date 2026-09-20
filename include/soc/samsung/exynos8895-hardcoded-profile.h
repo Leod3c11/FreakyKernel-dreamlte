@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 7U
+#define EXYNOS8895_HC_PROFILE_VERSION 6U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
@@ -520,22 +520,6 @@ exynos8895_hc_domain(unsigned int idx)
 	return &exynos8895_hc_domains[idx];
 }
 
-
-static inline unsigned int
-exynos8895_hc_exposed_max(unsigned int idx)
-{
-    const struct exynos8895_hc_domain_desc *d = exynos8895_hc_domain(idx);
-
-    return d ? d->table_max_khz : 0;
-}
-
-static inline unsigned int
-exynos8895_hc_safe_max(unsigned int idx)
-{
-    const struct exynos8895_hc_domain_desc *d = exynos8895_hc_domain(idx);
-
-    return d ? d->policy_max_khz : 0;
-}
 
 static inline bool exynos8895_hc_override_cal(unsigned int idx)
 {
