@@ -51,6 +51,7 @@ enum exynos8895_g3d_persist_stage {
 };
 
 int exynos8895_g3d_persist_init(void);
+int exynos8895_g3d_persist_dump(char *buf, unsigned int size);
 void exynos8895_g3d_persist_log(unsigned int stage,
 				unsigned int req,
 				unsigned int a,

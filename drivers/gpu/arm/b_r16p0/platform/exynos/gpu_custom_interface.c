@@ -404,6 +404,24 @@ static ssize_t show_clock_core(struct device *dev, struct device_attribute *attr
 	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_core_rate_exact());
 }
 
+static ssize_t show_g3d_crashlog(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int ret;
+
+	ret = exynos8895_g3d_persist_init();
+	if (ret)
+		return scnprintf(buf, PAGE_SIZE,
+			"G3D_PERSIST init failed ret=%d\n", ret);
+
+	ret = exynos8895_g3d_persist_dump(buf, PAGE_SIZE);
+	if (ret < 0)
+		return scnprintf(buf, PAGE_SIZE,
+			"G3D_PERSIST dump failed ret=%d\n", ret);
+
+	return ret;
+}
+
 static ssize_t show_soc_profile(struct device *dev,
         struct device_attribute *attr, char *buf)
 {
@@ -1704,6 +1722,7 @@ DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
 #if defined(CONFIG_SOC_EXYNOS8895)
 DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
 DEVICE_ATTR(clock_core, S_IRUGO, show_clock_core, NULL);
+DEVICE_ATTR(g3d_crashlog, S_IRUGO, show_g3d_crashlog, NULL);
 DEVICE_ATTR(g3d_runtime_max, S_IRUGO|S_IWUSR, show_g3d_runtime_max, set_g3d_runtime_max);
 DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
 DEVICE_ATTR(g3d_diag, S_IRUGO, show_g3d_diag, NULL);
@@ -2277,6 +2296,11 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_core]\n");
 		goto out;
 	}
+	if (device_create_file(dev, &dev_attr_g3d_crashlog)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"couldn't create sysfs file [g3d_crashlog]\n");
+		goto out;
+	}
 	if (device_create_file(dev, &dev_attr_g3d_runtime_max)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
 			"couldn't create sysfs file [g3d_runtime_max]\n");
@@ -2487,6 +2511,7 @@ void gpu_remove_sysfs_file(struct device *dev)
 #if defined(CONFIG_SOC_EXYNOS8895)
 	device_remove_file(dev, &dev_attr_clock_exact);
 	device_remove_file(dev, &dev_attr_clock_core);
+	device_remove_file(dev, &dev_attr_g3d_crashlog);
 	device_remove_file(dev, &dev_attr_g3d_runtime_max);
 	device_remove_file(dev, &dev_attr_pll_pms);
 	device_remove_file(dev, &dev_attr_g3d_diag);

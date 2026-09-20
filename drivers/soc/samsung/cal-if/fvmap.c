@@ -278,6 +278,74 @@ static int exynos8895_g3d_persist_open(struct inode *inode,
 	return single_open(file, exynos8895_g3d_persist_show, NULL);
 }
 
+int exynos8895_g3d_persist_dump(char *buf, unsigned int size)
+{
+	struct exynos8895_g3d_persist_event ev;
+	unsigned int head;
+	unsigned int boot;
+	unsigned int start;
+	unsigned int seq;
+	unsigned int slot;
+	unsigned int off;
+	unsigned int max_events = 56U;
+	int ret = 0;
+
+	if (!buf || !size)
+		return -EINVAL;
+
+	if (!exynos8895_g3d_persist_base) {
+		int init_ret = exynos8895_g3d_persist_init();
+
+		if (init_ret)
+			return scnprintf(buf, size,
+				"G3D_PERSIST unavailable init_ret=%d\n",
+				init_ret);
+	}
+
+	head = readl(exynos8895_g3d_persist_base +
+		     G3D_PERSIST_OFF_HEAD);
+	boot = readl(exynos8895_g3d_persist_base +
+		     G3D_PERSIST_OFF_BOOT);
+
+	start = head > max_events ? head - max_events : 0U;
+
+	ret += scnprintf(buf + ret, size - ret,
+		"G3D_PERSIST magic=0x%08x version=%u boot=%u head=%u capacity=%u size=%u\n",
+		readl(exynos8895_g3d_persist_base +
+		      G3D_PERSIST_OFF_MAGIC),
+		readl(exynos8895_g3d_persist_base +
+		      G3D_PERSIST_OFF_VERSION),
+		boot, head, exynos8895_g3d_persist_capacity,
+		exynos8895_g3d_persist_size);
+
+	ret += scnprintf(buf + ret, size - ret,
+		"seq boot stage req a b c ret\n");
+
+	for (seq = start;
+	     seq < head && ret < (int)size - 96;
+	     seq++) {
+		slot = seq % exynos8895_g3d_persist_capacity;
+		off = EXYNOS8895_G3D_PERSIST_HDR_SIZE +
+		      slot * sizeof(struct exynos8895_g3d_persist_event);
+
+		memcpy_fromio(&ev,
+			      exynos8895_g3d_persist_base + off,
+			      sizeof(ev));
+
+		if (ev.seq != seq)
+			continue;
+
+		ret += scnprintf(buf + ret, size - ret,
+			"%u %u %s %u %u %u %u %d\n",
+			ev.seq, ev.boot,
+			exynos8895_g3d_persist_stage_name(ev.stage),
+			ev.req, ev.a, ev.b, ev.c, ev.ret);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(exynos8895_g3d_persist_dump);
+
 static const struct file_operations exynos8895_g3d_persist_fops = {
 	.owner = THIS_MODULE,
 	.open = exynos8895_g3d_persist_open,
