@@ -191,43 +191,45 @@ static bool exynos8895_g3d_source_table_valid(void)
 }
 
 
-/*
- * EXYNOS8895-G3D-ACPM-EXPAND-V11
- *
- * The ACPM DVFS firmware iterates fvmap_header.num_of_lv and reads
- * o_ratevolt/o_tables/o_members dynamically.  Keep firmware code untouched
- * and relocate G3D's variable-size structures into the unused tail of the
- * 8 KiB FVMap window.
- *
- * 0x1e00..0x1fff is used only after runtime collision validation.  We also
- * require every existing member object to be at least 0x100 bytes below the
- * relocation base, protecting variable-size member metadata not described by
- * fvmap.h.
- */
-#define EXYNOS8895_G3D_EXPAND_BASE       0x1e00U
-#define EXYNOS8895_G3D_MEMBER_GUARD      0x0100U
 
-static bool exynos8895_g3d_ranges_overlap(unsigned int a_off,
-					  unsigned int a_len,
-					  unsigned int b_off,
-					  unsigned int b_len)
+/*
+ * EXYNOS8895-G3D-DYNAMIC-FVMAP-V12
+ *
+ * V11 assumed a fixed free tail at 0x1e00. Real devices may contain
+ * firmware metadata there, which correctly made V11 abort and forced Mali
+ * back to the Samsung/ASV path (five visible rows on this device).
+ *
+ * V12 allocates each enlarged G3D object independently. It derives an
+ * occupancy map from the live FVMap, protects every referenced member object
+ * conservatively, and reclaims only the three old G3D-owned objects.
+ */
+#define EXYNOS8895_G3D_MEMBER_GUARD_V12   0x0080U
+
+static void exynos8895_g3d_mark_bytes(unsigned char *map,
+				      unsigned int off,
+				      unsigned int len,
+				      unsigned char value)
 {
-	if (!a_len || !b_len)
-		return false;
-	return a_off < b_off + b_len && b_off < a_off + a_len;
+	if (!map || !len || off >= FVMAP_SIZE)
+		return;
+	if (len > FVMAP_SIZE - off)
+		len = FVMAP_SIZE - off;
+	memset(map + off, value, len);
 }
 
-static int exynos8895_g3d_tail_region_free(unsigned int start,
-					   unsigned int end)
+static int exynos8895_g3d_build_occupancy(unsigned char *used)
 {
 	struct fvmap_header *header = sram_fvmap_base;
 	unsigned int domains = cmucal_get_list_size(ACPM_VCLK_TYPE);
 	unsigned int i, j;
 
-	if (!header || start >= end || end > FVMAP_SIZE)
+	if (!used || !header)
 		return -EINVAL;
-	if (domains * sizeof(struct fvmap_header) > start)
-		return -ENOSPC;
+
+	memset(used, 0, FVMAP_SIZE);
+
+	exynos8895_g3d_mark_bytes(used, 0,
+		domains * sizeof(struct fvmap_header), 1);
 
 	for (i = 0; i < domains; i++) {
 		struct fvmap_header *h = &header[i];
@@ -235,33 +237,42 @@ static int exynos8895_g3d_tail_region_free(unsigned int start,
 		unsigned int bytes;
 
 		bytes = (unsigned int)h->num_of_lv * sizeof(struct rate_volt);
-		if (h->o_ratevolt && exynos8895_g3d_ranges_overlap(
-				h->o_ratevolt, bytes, start, end - start))
-			return -EBUSY;
+		if (!h->o_ratevolt || h->o_ratevolt + bytes > FVMAP_SIZE)
+			return -EINVAL;
+		exynos8895_g3d_mark_bytes(used, h->o_ratevolt, bytes, 1);
 
-		/* Firmware indexes this byte table as level * num_of_members. */
 		bytes = (unsigned int)h->num_of_lv * h->num_of_members;
-		if (h->o_tables && exynos8895_g3d_ranges_overlap(
-				h->o_tables, bytes, start, end - start))
-			return -EBUSY;
+		if (bytes) {
+			if (!h->o_tables || h->o_tables + bytes > FVMAP_SIZE)
+				return -EINVAL;
+			exynos8895_g3d_mark_bytes(used, h->o_tables, bytes, 1);
+		}
 
 		bytes = (unsigned int)h->num_of_members * sizeof(unsigned short);
-		if (!h->o_members || h->o_members + bytes > FVMAP_SIZE)
-			return -EINVAL;
-		if (exynos8895_g3d_ranges_overlap(
-				h->o_members, bytes, start, end - start))
-			return -EBUSY;
+		if (bytes) {
+			if (!h->o_members || h->o_members + bytes > FVMAP_SIZE)
+				return -EINVAL;
+			exynos8895_g3d_mark_bytes(used, h->o_members, bytes, 1);
+		}
+
+		if (!h->num_of_members)
+			continue;
 
 		clks = sram_fvmap_base + h->o_members;
+
 		for (j = 0; j < h->num_of_members; j++) {
 			unsigned int off = clks->addr[j];
+			unsigned int begin;
 
-			/* Some firmware-only members use 0xffff as a sentinel. */
 			if (off == 0xffffU)
 				continue;
+			if (off >= FVMAP_SIZE)
+				return -EINVAL;
 
-			if (off >= start - EXYNOS8895_G3D_MEMBER_GUARD)
-				return -EBUSY;
+			begin = off >= 16U ? off - 16U : 0U;
+			exynos8895_g3d_mark_bytes(
+				used, begin,
+				EXYNOS8895_G3D_MEMBER_GUARD_V12 + 16U, 1);
 
 			if (j < h->num_of_pll) {
 				struct pll_header *pll;
@@ -269,28 +280,83 @@ static int exynos8895_g3d_tail_region_free(unsigned int start,
 
 				if (off + sizeof(struct pll_header) > FVMAP_SIZE)
 					return -EINVAL;
+
 				pll = sram_fvmap_base + off;
 				pll_bytes = sizeof(struct pll_header) +
-					(unsigned int)pll->level * sizeof(unsigned int);
+					(unsigned int)pll->level *
+					sizeof(unsigned int);
+
 				if (off + pll_bytes > FVMAP_SIZE)
 					return -EINVAL;
-				if (exynos8895_g3d_ranges_overlap(
-						off, pll_bytes, start, end - start))
-					return -EBUSY;
+
+				exynos8895_g3d_mark_bytes(
+					used, off, pll_bytes, 1);
 			}
 		}
 	}
 
-	/* Refuse to overwrite undocumented/non-zero tail data. */
-	{
-		unsigned char *raw = sram_fvmap_base;
+	return 0;
+}
 
-		for (i = start; i < end; i++)
-			if (raw[i])
-				return -EBUSY;
+static bool exynos8895_g3d_region_available(
+		unsigned char *used,
+		unsigned char *reclaim,
+		unsigned int off,
+		unsigned int len)
+{
+	unsigned char *raw = sram_fvmap_base;
+	unsigned int i;
+
+	if (!used || !reclaim || !len)
+		return false;
+	if (off >= FVMAP_SIZE || len > FVMAP_SIZE - off)
+		return false;
+
+	for (i = 0; i < len; i++) {
+		if (used[off + i])
+			return false;
+		if (raw[off + i] && !reclaim[off + i])
+			return false;
 	}
 
-	return 0;
+	return true;
+}
+
+static int exynos8895_g3d_find_region(
+		unsigned char *used,
+		unsigned char *reclaim,
+		unsigned int preferred,
+		unsigned int len,
+		unsigned int align,
+		unsigned int *result)
+{
+	unsigned int domains = cmucal_get_list_size(ACPM_VCLK_TYPE);
+	unsigned int first = ALIGN(
+		domains * sizeof(struct fvmap_header), align);
+	unsigned int off;
+
+	if (!result || !align || (align & (align - 1U)))
+		return -EINVAL;
+
+	if (!(preferred & (align - 1U)) &&
+	    exynos8895_g3d_region_available(
+		    used, reclaim, preferred, len)) {
+		*result = preferred;
+		exynos8895_g3d_mark_bytes(used, preferred, len, 1);
+		return 0;
+	}
+
+	for (off = first; off + len <= FVMAP_SIZE; off += align) {
+		if (!exynos8895_g3d_region_available(
+			    used, reclaim, off, len))
+			continue;
+
+		*result = off;
+		exynos8895_g3d_mark_bytes(used, off, len, 1);
+		return 0;
+	}
+
+	return -ENOSPC;
 }
 
 static unsigned int exynos8895_g3d_find_init_level(unsigned int old_rate)
@@ -377,11 +443,18 @@ int exynos8895_g3d_hardcoded_apply(void)
 	struct clocks *clks;
 	struct pll_header *old_pll;
 	struct pll_header *new_pll;
+	unsigned char *used = NULL;
+	unsigned char *reclaim = NULL;
 	unsigned int idx = EXYNOS8895_G3D_ACPM_INDEX;
-	unsigned int rv_off = EXYNOS8895_G3D_EXPAND_BASE;
+	unsigned int rv_off;
 	unsigned int table_off;
 	unsigned int pll_off;
-	unsigned int end_off;
+	unsigned int rv_bytes;
+	unsigned int table_bytes;
+	unsigned int pll_bytes;
+	unsigned int old_rv_bytes;
+	unsigned int old_table_bytes;
+	unsigned int old_pll_bytes;
 	unsigned int old_init_rate = 0;
 	unsigned int old_pll_off;
 	unsigned int pms_flags;
@@ -397,50 +470,69 @@ int exynos8895_g3d_hardcoded_apply(void)
 
 	header = sram_fvmap_base;
 	h = &header[idx];
-	if (h->num_of_pll != 1 || h->num_of_members != 1 || !h->o_members)
-		return -ENODEV;
 
-	table_off = ALIGN(rv_off +
-		EXYNOS8895_G3D_OPP_COUNT * sizeof(struct rate_volt), 4);
-	pll_off = ALIGN(table_off + EXYNOS8895_G3D_OPP_COUNT, 4);
-	end_off = pll_off + sizeof(struct pll_header) +
-		EXYNOS8895_G3D_OPP_COUNT * sizeof(unsigned int);
-	if (end_off > FVMAP_SIZE)
-		return -ENOSPC;
+	if (h->num_of_pll != 1 || h->num_of_members != 1 ||
+	    !h->o_members || !h->o_ratevolt || !h->o_tables)
+		return -ENODEV;
 
 	clks = sram_fvmap_base + h->o_members;
 
-	/* Already expanded: validate our relocated identity and refresh values. */
+	rv_bytes = EXYNOS8895_G3D_OPP_COUNT *
+		sizeof(struct rate_volt);
+	table_bytes = EXYNOS8895_G3D_OPP_COUNT * h->num_of_members;
+	pll_bytes = sizeof(struct pll_header) +
+		EXYNOS8895_G3D_OPP_COUNT * sizeof(unsigned int);
+
 	if (h->num_of_lv == EXYNOS8895_G3D_OPP_COUNT) {
-		if (h->o_ratevolt != rv_off || h->o_tables != table_off ||
-		    clks->addr[0] != pll_off)
-			return -ENODEV;
+		rv_off = h->o_ratevolt;
+		table_off = h->o_tables;
+		pll_off = clks->addr[0];
+
+		if (rv_off + rv_bytes > FVMAP_SIZE ||
+		    table_off + table_bytes > FVMAP_SIZE ||
+		    pll_off + pll_bytes > FVMAP_SIZE)
+			return -EINVAL;
 
 		new_pll = sram_fvmap_base + pll_off;
-		if ((new_pll->addr & 0xffffU) != EXYNOS8895_G3D_PLL_SFR_LO ||
+		if ((new_pll->addr & 0xffffU) !=
+				EXYNOS8895_G3D_PLL_SFR_LO ||
 		    new_pll->level != EXYNOS8895_G3D_OPP_COUNT)
 			return -ENODEV;
 
-		pms_flags = new_pll->pms[0] & ~EXYNOS8895_G3D_PMS_MASK;
-		exynos8895_g3d_write_expanded_map(h, rv_off, table_off, pll_off,
+		pms_flags = new_pll->pms[0] &
+			~EXYNOS8895_G3D_PMS_MASK;
+
+		exynos8895_g3d_write_expanded_map(
+			h, rv_off, table_off, pll_off,
 			new_pll->addr, new_pll->o_lock, pms_flags);
+
 		exynos8895_g3d_sram_active = true;
+		pr_info("G3D V12: existing expanded FVMap refreshed rv=0x%x table=0x%x pll=0x%x\n",
+			rv_off, table_off, pll_off);
 		return 0;
 	}
 
-	/* First conversion must start from the untouched Samsung 9-level map. */
 	if (h->num_of_lv != EXYNOS8895_G3D_STOCK_FVMAP_COUNT)
 		return -ENODEV;
-	if (h->o_ratevolt + EXYNOS8895_G3D_STOCK_FVMAP_COUNT *
-		    sizeof(struct rate_volt) > FVMAP_SIZE)
+
+	old_rv_bytes = EXYNOS8895_G3D_STOCK_FVMAP_COUNT *
+		sizeof(struct rate_volt);
+	old_table_bytes = EXYNOS8895_G3D_STOCK_FVMAP_COUNT *
+		h->num_of_members;
+
+	if (h->o_ratevolt + old_rv_bytes > FVMAP_SIZE ||
+	    h->o_tables + old_table_bytes > FVMAP_SIZE)
 		return -EINVAL;
 
 	old_rv = sram_fvmap_base + h->o_ratevolt;
+
 	for (i = 0; i < EXYNOS8895_G3D_STOCK_FVMAP_COUNT; i++) {
 		unsigned int rate = old_rv->table[i].rate;
+
 		if (rate != exynos8895_g3d_stock_rate[i] &&
 		    rate != exynos8895_g3d_stock_pll_rate[i]) {
-			pr_err("G3D expand: stock slot %u unexpected rate %u\n", i, rate);
+			pr_err("G3D V12: stock slot %u unexpected rate %u\n",
+				i, rate);
 			return -EINVAL;
 		}
 	}
@@ -451,37 +543,99 @@ int exynos8895_g3d_hardcoded_apply(void)
 	old_pll_off = clks->addr[0];
 	if (old_pll_off + sizeof(struct pll_header) > FVMAP_SIZE)
 		return -EINVAL;
+
 	old_pll = sram_fvmap_base + old_pll_off;
-	if ((old_pll->addr & 0xffffU) != EXYNOS8895_G3D_PLL_SFR_LO ||
-	    old_pll->level < EXYNOS8895_G3D_STOCK_FVMAP_COUNT)
+	old_pll_bytes = sizeof(struct pll_header) +
+		(unsigned int)old_pll->level * sizeof(unsigned int);
+
+	if ((old_pll->addr & 0xffffU) !=
+			EXYNOS8895_G3D_PLL_SFR_LO ||
+	    old_pll->level < EXYNOS8895_G3D_STOCK_FVMAP_COUNT ||
+	    old_pll_off + old_pll_bytes > FVMAP_SIZE)
 		return -ENODEV;
 
-	ret = exynos8895_g3d_tail_region_free(rv_off, end_off);
-	if (ret) {
-		pr_err("G3D expand: FVMap tail 0x%x..0x%x unavailable (%d)\n",
-			rv_off, end_off, ret);
-		return ret;
+	used = kzalloc(FVMAP_SIZE, GFP_KERNEL);
+	reclaim = kzalloc(FVMAP_SIZE, GFP_KERNEL);
+	if (!used || !reclaim) {
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	pms_flags = old_pll->pms[0] & ~EXYNOS8895_G3D_PMS_MASK;
-	exynos8895_g3d_write_expanded_map(h, rv_off, table_off, pll_off,
+	ret = exynos8895_g3d_build_occupancy(used);
+	if (ret)
+		goto out;
+
+	exynos8895_g3d_mark_bytes(
+		reclaim, h->o_ratevolt, old_rv_bytes, 1);
+	exynos8895_g3d_mark_bytes(
+		reclaim, h->o_tables, old_table_bytes, 1);
+	exynos8895_g3d_mark_bytes(
+		reclaim, old_pll_off, old_pll_bytes, 1);
+
+	exynos8895_g3d_mark_bytes(
+		used, h->o_ratevolt, old_rv_bytes, 0);
+	exynos8895_g3d_mark_bytes(
+		used, h->o_tables, old_table_bytes, 0);
+	exynos8895_g3d_mark_bytes(
+		used, old_pll_off, old_pll_bytes, 0);
+
+	ret = exynos8895_g3d_find_region(
+		used, reclaim, h->o_ratevolt,
+		rv_bytes, 4U, &rv_off);
+	if (ret) {
+		pr_err("G3D V12: no %u-byte ratevolt region (%d)\n",
+			rv_bytes, ret);
+		goto out;
+	}
+
+	ret = exynos8895_g3d_find_region(
+		used, reclaim, old_pll_off,
+		pll_bytes, 4U, &pll_off);
+	if (ret) {
+		pr_err("G3D V12: no %u-byte PLL region (%d)\n",
+			pll_bytes, ret);
+		goto out;
+	}
+
+	ret = exynos8895_g3d_find_region(
+		used, reclaim, h->o_tables,
+		table_bytes, 4U, &table_off);
+	if (ret) {
+		pr_err("G3D V12: no %u-byte table region (%d)\n",
+			table_bytes, ret);
+		goto out;
+	}
+
+	pms_flags = old_pll->pms[0] &
+		~EXYNOS8895_G3D_PMS_MASK;
+
+	exynos8895_g3d_write_expanded_map(
+		h, rv_off, table_off, pll_off,
 		old_pll->addr, old_pll->o_lock, pms_flags);
 
-	/* Publish all relocated payload first; expose the larger level count last. */
 	wmb();
 	clks->addr[0] = pll_off;
 	h->o_ratevolt = rv_off;
 	h->o_tables = table_off;
-	h->init_lv = exynos8895_g3d_find_init_level(old_init_rate);
+	h->init_lv =
+		exynos8895_g3d_find_init_level(old_init_rate);
 	wmb();
 	h->num_of_lv = EXYNOS8895_G3D_OPP_COUNT;
 	wmb();
 
 	exynos8895_g3d_sram_active = true;
-	pr_info("G3D expand: ACPM FVMap %u -> %u levels rv=0x%x table=0x%x pll=0x%x end=0x%x init=%u\n",
-		EXYNOS8895_G3D_STOCK_FVMAP_COUNT, EXYNOS8895_G3D_OPP_COUNT,
-		rv_off, table_off, pll_off, end_off, h->init_lv);
-	return 0;
+
+	pr_info("G3D V12: ACPM FVMap %u -> %u levels rv=0x%x table=0x%x pll=0x%x init=%u\n",
+		EXYNOS8895_G3D_STOCK_FVMAP_COUNT,
+		EXYNOS8895_G3D_OPP_COUNT,
+		rv_off, table_off, pll_off, h->init_lv);
+
+	ret = 0;
+
+out:
+	kfree(reclaim);
+	kfree(used);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_apply);
 
@@ -1317,8 +1471,8 @@ int fvmap_init(void __iomem *sram_base)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
 	/*
-	 * Grow G3D in the live ACPM map first.  If collision/identity validation
-	 * fails, leave Samsung's original map untouched and keep booting stock.
+	 * Grow G3D in the live ACPM map first using the V12 dynamic allocator.
+	 * If allocation/identity validation fails, keep Samsung's map intact.
 	 */
 	g3d_ret = exynos8895_g3d_hardcoded_apply();
 	if (g3d_ret)

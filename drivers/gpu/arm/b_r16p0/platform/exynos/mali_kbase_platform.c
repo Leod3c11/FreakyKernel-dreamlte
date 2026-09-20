@@ -381,7 +381,7 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		apply_ret = exynos8895_g3d_hardcoded_apply();
 		if (apply_ret) {
 			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"G3D expanded: ACPM FVMap unavailable (%d), using stock Mali path\n",
+				"G3D V12: ACPM FVMap expansion unavailable (%d), using stock Mali path\n",
 				apply_ret);
 			goto exynos8895_g3d_stock_fallback;
 		}
@@ -427,7 +427,7 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		}
 
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-			"G3D expanded: Mali owns %u source rows %u..%u kHz (SRAM ret=%d)\n",
+			"G3D V12: Mali owns %u source rows %u..%u kHz (SRAM ret=%d)\n",
 			EXYNOS8895_G3D_OPP_COUNT, platform->gpu_max_clock,
 			platform->gpu_min_clock, apply_ret);
 		return 0;

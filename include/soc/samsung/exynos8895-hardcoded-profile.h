@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 11U
+#define EXYNOS8895_HC_PROFILE_VERSION 12U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
@@ -121,6 +121,7 @@ struct exynos8895_hc_domain_desc {
 #define EXYNOS8895_G3D_OPP_COUNT         11U
 #define EXYNOS8895_G3D_STOCK_FVMAP_COUNT 9U
 #define EXYNOS8895_G3D_MAX_SOURCE_OPPS    20U
+#define EXYNOS8895_G3D_DYNAMIC_FVMAP_V12  1U
 #define EXYNOS8895_HC_G3D_OPP_COUNT      EXYNOS8895_G3D_OPP_COUNT
 #define EXYNOS8895_G3D_FVMAP_COUNT       EXYNOS8895_G3D_OPP_COUNT
 #define EXYNOS8895_G3D_TMU_COUNT         7U
@@ -158,7 +159,7 @@ struct exynos8895_g3d_hardcoded_opp {
 static const struct exynos8895_g3d_hardcoded_opp
 exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT] = {
 	/*
-	 * EXYNOS8895-G3D-ACPM-EXPAND-V11
+	 * EXYNOS8895-G3D-DYNAMIC-FVMAP-V12
 	 *
 	 * Native expanded ACPM/FVMap table.  These are real rates sent to the
 	 * ACPM firmware; acpm_key_khz intentionally equals clock_khz.  The live
