@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 6U
+#define EXYNOS8895_HC_PROFILE_VERSION 8U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
@@ -449,7 +449,7 @@ exynos8895_hc_domains[EXYNOS8895_HC_DOMAIN_COUNT] = {
 	},
 	[EXYNOS8895_HC_CPUCL0] = {
 		"dvfs_cpucl0", NULL, "vdd_cpucl0", 2,
-		741000, 2314000, 741000, 2808000,
+		741000, 2704000, 741000, 2808000,
 		ARRAY_SIZE(exynos8895_hc_cpucl0_levels), exynos8895_hc_cpucl0_levels,
 		ARRAY_SIZE(exynos8895_hc_cpucl0_members), exynos8895_hc_cpucl0_members,
 		ARRAY_SIZE(exynos8895_hc_cpucl0_plls), exynos8895_hc_cpucl0_plls,
@@ -457,7 +457,7 @@ exynos8895_hc_domains[EXYNOS8895_HC_DOMAIN_COUNT] = {
 	},
 	[EXYNOS8895_HC_CPUCL1] = {
 		"dvfs_cpucl1", NULL, "vdd_cpucl1", 3,
-		455000, 1690000, 455000, 2002000,
+		455000, 1898000, 455000, 2002000,
 		ARRAY_SIZE(exynos8895_hc_cpucl1_levels), exynos8895_hc_cpucl1_levels,
 		ARRAY_SIZE(exynos8895_hc_cpucl1_members), exynos8895_hc_cpucl1_members,
 		ARRAY_SIZE(exynos8895_hc_cpucl1_plls), exynos8895_hc_cpucl1_plls,

@@ -20,6 +20,9 @@
 #include <linux/pm_opp.h>
 
 #include <soc/samsung/cal-if.h>
+#if defined(CONFIG_SOC_EXYNOS8895)
+#include <soc/samsung/exynos8895-hardcoded-profile.h>
+#endif
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/exynos-earlytmu.h>
 
@@ -1261,6 +1264,41 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 	}
 
 init_table:
+
+#if defined(CONFIG_SOC_EXYNOS8895)
+	/*
+	 * EXYNOS8895-CPU-UNLOCK-V8
+	 *
+	 * CPU-only unlock.
+	 * The complete CPU ECT/FVMap table already exists; init_table() below
+	 * registers only rows <= domain->max_freq and uses the target device's
+	 * FVMap voltage for each row.
+	 *
+	 * Samsung hardware naming:
+	 *   dvfs_cpucl1 -> Linux CPUs 0-3
+	 *   dvfs_cpucl0 -> Linux CPUs 4-7
+	 */
+	if (cpumask_test_cpu(4, &domain->cpus)) {
+		const struct exynos8895_hc_domain_desc *hc =
+			exynos8895_hc_domain(EXYNOS8895_HC_CPUCL0);
+
+		if (hc) {
+			domain->max_freq = hc->policy_max_khz;
+			pr_info("EXYNOS8895-CPU-UNLOCK-V8: CPUs 4-7 max=%u kHz\n",
+				domain->max_freq);
+		}
+	} else if (cpumask_test_cpu(0, &domain->cpus)) {
+		const struct exynos8895_hc_domain_desc *hc =
+			exynos8895_hc_domain(EXYNOS8895_HC_CPUCL1);
+
+		if (hc) {
+			domain->max_freq = hc->policy_max_khz;
+			pr_info("EXYNOS8895-CPU-UNLOCK-V8: CPUs 0-3 max=%u kHz\n",
+				domain->max_freq);
+		}
+	}
+#endif
+
 	ufc_domain_init(domain);
 
 	ret = init_table(domain);
