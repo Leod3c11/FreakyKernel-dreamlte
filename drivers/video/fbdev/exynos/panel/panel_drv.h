@@ -229,6 +229,12 @@ struct panel_device {
 
 	unsigned char panel_id[3];
 
+	/* EXYNOS8895-D14015-REFRESH-LAB-V3 */
+	u8 oc_refresh_selector;
+	u64 oc_te_window_start_ns;
+	u32 oc_te_frames;
+	u32 oc_te_rate_millihz;
+
 	struct v4l2_subdev sd;
 
 	struct panel_pad pad;

@@ -1586,17 +1586,6 @@ u8 DREAM_A3_DA_IRC_ON[] = {
 
 u8 DREAM_A3_DA_GAMMA_UPDATE_ENABLE[] = { 0xF7, 0x03 };
 
-/* EXYNOS8895-S6E3HA6-75HZ-RUNTIME-PROBE-V2
- *
- * Runtime-only panel-frequency probe.
- * 0x60 is used as a Samsung DDIC frequency selector on later generations.
- * 0x04 is tested here as a 75-Hz candidate.
- *
- * This command is NOT sent during boot.
- */
-u8 DREAM_A3_DA_OC_REFRESH_75[] = { 0x60, 0x08 };
-u8 DREAM_A3_DA_OC_REFRESH_60[] = { 0x60, 0x00 };
-
 u8 DREAM_A3_DA_ACL_ONOFF[] = { 0x55, 0x00 };
 u8 DREAM_A3_DA_ACL_CONTROL[] = { 0xB4, 0x00, 0x44, 0x99, 0x00, 0x00, 0x0A, 0x00 };
 u8 DREAM_A3_DA_SCALER_UPDATE_TIMMING_00[] = { 0xB0, 0x0A };
@@ -1859,8 +1848,6 @@ static DEFINE_PACKET(dream_a3_da_vgh_vint, DSI_PKT_TYPE_WR, DREAM_A3_DA_VGH_VINT
 DEFINE_VARIABLE_PACKET(dream_a3_da_irc_on, DSI_PKT_TYPE_WR, DREAM_A3_DA_IRC_ON, &dream_a3_da_maptbl[IRC_MAPTBL], 1);
 DEFINE_STATIC_PACKET(dream_a3_da_irc_off, DSI_PKT_TYPE_WR, DREAM_A3_DA_IRC_OFF);
 DEFINE_STATIC_PACKET(dream_a3_da_gamma_update_enable, DSI_PKT_TYPE_WR, DREAM_A3_DA_GAMMA_UPDATE_ENABLE);
-DEFINE_STATIC_PACKET(dream_a3_da_oc_refresh_75, DSI_PKT_TYPE_WR, DREAM_A3_DA_OC_REFRESH_75);
-DEFINE_STATIC_PACKET(dream_a3_da_oc_refresh_60, DSI_PKT_TYPE_WR, DREAM_A3_DA_OC_REFRESH_60);
 DEFINE_VARIABLE_PACKET(dream_a3_da_acl_onoff, DSI_PKT_TYPE_WR, DREAM_A3_DA_ACL_ONOFF, &dream_a3_da_maptbl[ACL_ONOFF_MAPTBL], 1);
 
 static struct pkt_update_info PKTUI(dream_a3_da_acl_control)[] = {
@@ -2038,21 +2025,19 @@ static void *dream_a3_da_set_bl_cmdtbl[] = {
 };
 
 static void *dream_a3_da_hmd_on_cmdtbl[] = {
-	/*
-	 * OC probe only. Do not apply HMD AOR/LTPS tables here.
-	 * hmt_on is used purely as a reversible refresh switch.
-	 */
 	&KEYINFO(dream_a3_da_level2_key_enable),
-	&PKTINFO(dream_a3_da_oc_refresh_75),
+	&PKTINFO(dream_a3_da_hmd_on_aor),
+	&PKTINFO(dream_a3_da_hmd_on_ltps),
 	&PKTINFO(dream_a3_da_gamma_update_enable),
 	&KEYINFO(dream_a3_da_level2_key_disable),
 };
 
 static void *dream_a3_da_hmd_off_cmdtbl[] = {
-	/* Explicit 60-Hz restore plus the known Samsung stock HMD-OFF state. */
 	&KEYINFO(dream_a3_da_level2_key_enable),
-	&PKTINFO(dream_a3_da_oc_refresh_60),
 	&PKTINFO(dream_a3_da_hmd_off_aor),
+	&PKTINFO(dream_a3_da_gamma_update_enable),
+	&KEYINFO(dream_a3_da_level2_key_disable),
+	&KEYINFO(dream_a3_da_level2_key_enable),
 	&PKTINFO(dream_a3_da_hmd_off_ltps),
 	&PKTINFO(dream_a3_da_gamma_update_enable),
 	&KEYINFO(dream_a3_da_level2_key_disable),

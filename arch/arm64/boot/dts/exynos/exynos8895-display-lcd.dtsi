@@ -240,7 +240,7 @@
 		mode = <2>;		/* 0: video mode, 1: DP command mode, 2: MIPI command mode */
 		resolution = <1440 2960>;
 		size = <65 133>;
-		timing,refresh = <75>; /* EXYNOS8895-DREAM1-DISPLAY-75HZ-STAGE1 */
+		timing,refresh = <60>;
 		timing,h-porch = <2 2 2>;
 		timing,v-porch = <15 3 1>;
 		timing,dsi-hs-clk = <898>;

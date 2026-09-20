@@ -27,6 +27,7 @@
 #include <linux/debugfs.h>
 #include <linux/of_gpio.h>
 #include <linux/of_address.h>
+#include <linux/math64.h>
 #include <video/mipi_display.h>
 #include "../dpu/decon.h"
 #include "panel.h"
@@ -50,6 +51,123 @@ static int connect_panel = PANEL_CONNECT;
 #endif
 static int panel_prepare(struct panel_device *panel,
 		struct common_panel_info *info);
+
+
+/* EXYNOS8895-D14015-REFRESH-LAB-V3
+ *
+ * Runtime-only refresh selector lab for the exact Dream1 panel ID D1:40:15
+ * (Samsung AMB577MQ01 / S6E3HA6). Nothing is sent at boot. The stock Samsung
+ * DTB/extra and stock 60-Hz initialization remain untouched.
+ *
+ * Sysfs:
+ *   /sys/class/lcd/panel/oc_refresh_sel
+ *
+ * Write 0x00..0x0F to send DCS 0x60,<selector> followed by F7,03 update.
+ * Selector 0x00 is the known stock 60-Hz restore value. The V2 experiment
+ * established that selector 0x04 produces ~30 Hz on this exact D14015 panel.
+ * Unknown selectors are intentionally runtime-only and a reboot returns stock.
+ */
+static bool panel_oc_is_d14015(struct panel_device *panel)
+{
+	struct panel_info *pi;
+
+	if (!panel)
+		return false;
+	pi = &panel->panel_data;
+
+	return pi->id[0] == 0xD1 && pi->id[1] == 0x40 && pi->id[2] == 0x15;
+}
+
+static int panel_oc_mipi_write(struct panel_device *panel,
+		const u8 *data, int len)
+{
+	int ret;
+
+	if (!panel || !panel->mipi_drv.write)
+		return -ENODEV;
+
+	ret = panel->mipi_drv.write(panel->dsi_id, MIPI_DSI_WRITE, data, len);
+	if (ret != len)
+		return -EIO;
+
+	return 0;
+}
+
+static ssize_t oc_refresh_sel_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct panel_device *panel = dev_get_drvdata(dev);
+
+	if (!panel)
+		return -ENODEV;
+
+	return scnprintf(buf, PAGE_SIZE,
+		"panel=%02X%02X%02X selector=0x%02X physical_te=%u.%03uHz "
+		"boot=stock60 dsi=stock\n",
+		panel->panel_data.id[0], panel->panel_data.id[1],
+		panel->panel_data.id[2], panel->oc_refresh_selector,
+		panel->oc_te_rate_millihz / 1000,
+		panel->oc_te_rate_millihz % 1000);
+}
+
+static ssize_t oc_refresh_sel_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct panel_device *panel = dev_get_drvdata(dev);
+	unsigned int selector;
+	int ret = 0, off_ret;
+	const u8 key_on[] = { 0xF0, 0x5A, 0x5A };
+	u8 freq[] = { 0x60, 0x00 };
+	const u8 update[] = { 0xF7, 0x03 };
+	const u8 key_off[] = { 0xF0, 0xA5, 0xA5 };
+
+	if (!panel)
+		return -ENODEV;
+	if (!panel_oc_is_d14015(panel))
+		return -ENODEV;
+	if (panel->state.cur_state != PANEL_STATE_NORMAL)
+		return -EBUSY;
+	if (kstrtouint(buf, 0, &selector))
+		return -EINVAL;
+	if (selector > 0x0F)
+		return -ERANGE;
+
+	freq[1] = (u8)selector;
+
+	mutex_lock(&panel->op_lock);
+
+	ret = panel_oc_mipi_write(panel, key_on, ARRAY_SIZE(key_on));
+	if (ret)
+		goto out_unlock;
+
+	ret = panel_oc_mipi_write(panel, freq, ARRAY_SIZE(freq));
+	if (!ret)
+		ret = panel_oc_mipi_write(panel, update, ARRAY_SIZE(update));
+
+	/* Always try to close the Samsung level-2 key. */
+	off_ret = panel_oc_mipi_write(panel, key_off, ARRAY_SIZE(key_off));
+	if (!ret && off_ret)
+		ret = off_ret;
+
+	if (!ret) {
+		panel->oc_refresh_selector = (u8)selector;
+		panel->oc_te_window_start_ns = 0;
+		panel->oc_te_frames = 0;
+		panel->oc_te_rate_millihz = 0;
+		panel_info("PANEL:INFO:%s:D14015 selector=0x%02X\n",
+			__func__, selector);
+	}
+
+out_unlock:
+	mutex_unlock(&panel->op_lock);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+static DEVICE_ATTR(oc_refresh_sel, S_IRUGO | S_IWUSR,
+		oc_refresh_sel_show, oc_refresh_sel_store);
 static struct common_panel_info *panel_detect(struct panel_device *panel);
 
 #ifdef CONFIG_SUPPORT_DOZE
@@ -688,6 +806,14 @@ int panel_probe(struct panel_device *panel)
 		return -ENODEV;
 	}
 
+	/* EXYNOS8895-D14015-REFRESH-LAB-V3 */
+	if (panel_oc_is_d14015(panel)) {
+		ret = device_create_file(&panel->lcd->dev, &dev_attr_oc_refresh_sel);
+		if (ret)
+			panel_err("PANEL:ERR:%s:failed to create oc_refresh_sel (%d)\n",
+				__func__, ret);
+	}
+
 	ret = mdnie_probe(panel, info->mdnie_tune);
 	if (unlikely(ret)) {
 		pr_err("%s, failed to probe mdnie driver\n", __func__);
@@ -895,6 +1021,11 @@ retry_sleep_out:
 	}
 	state->cur_state = PANEL_STATE_NORMAL;
 	panel->ktime_panel_on = ktime_get();
+	/* EXYNOS8895-D14015-REFRESH-LAB-V3: stock selector at boot */
+	panel->oc_refresh_selector = 0x00;
+	panel->oc_te_window_start_ns = 0;
+	panel->oc_te_frames = 0;
+	panel->oc_te_rate_millihz = 0;
 #ifdef CONFIG_SUPPORT_HMD
 	if (state->hmd_on == PANEL_HMD_ON) {
 		panel_info("PANEK:INFO:%s:hmd was on, setting hmd on seq\n", __func__);
@@ -1298,7 +1429,28 @@ static long panel_core_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg
 			copr_update_start(&panel->copr, 3);
 			break;
 		case PANEL_IOC_EVT_VSYNC:
-			//panel_dbg("PANEL:INFO:%s:PANEL_IOC_EVT_VSYNC\n", __func__);
+			/* EXYNOS8895-D14015-REFRESH-LAB-V3: physical VSYNC meter */
+			if (panel_oc_is_d14015(panel)) {
+				u64 now_ns = (u64)ktime_to_ns(ktime_get());
+
+				if (!panel->oc_te_window_start_ns) {
+					panel->oc_te_window_start_ns = now_ns;
+					panel->oc_te_frames = 0;
+				} else {
+					panel->oc_te_frames++;
+					if (panel->oc_te_frames >= 32) {
+						u64 elapsed = now_ns - panel->oc_te_window_start_ns;
+
+						if (elapsed)
+							panel->oc_te_rate_millihz =
+								(u32)div64_u64(
+									(u64)panel->oc_te_frames * 1000000000000ULL,
+									elapsed);
+						panel->oc_te_window_start_ns = now_ns;
+						panel->oc_te_frames = 0;
+					}
+				}
+			}
 			break;
 #ifdef CONFIG_SUPPORT_INDISPLAY
 		case PANEL_IOC_SET_FINGER_SET:
