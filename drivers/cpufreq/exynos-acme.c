@@ -1297,6 +1297,30 @@ init_table:
 				domain->max_freq);
 		}
 	}
+
+	/*
+	 * EXYNOS8895-CPU-BOOST-UNLOCK-V9
+	 *
+	 * Samsung ACME applies an additional per-online-CPU maximum through
+	 * boost_max_freqs[] on every CPUFREQ_ADJUST/hotplug event. That table
+	 * was still carrying the stock BigTurbo ceilings, so v8 OPPs were
+	 * registered but policy->max was immediately pushed back.
+	 *
+	 * Keep the validated v8 domain ceiling for every online-CPU count.
+	 * PM QoS, thermal cooling and TMU remain untouched and may still
+	 * impose lower limits independently.
+	 */
+	if (domain->boost_supported && domain->boost_max_freqs) {
+		unsigned int oc_i;
+		unsigned int oc_cpu_count = cpumask_weight(&domain->cpus);
+
+		for (oc_i = 0; oc_i < oc_cpu_count; oc_i++)
+			domain->boost_max_freqs[oc_i] = domain->max_freq;
+
+		pr_info("EXYNOS8895-CPU-BOOST-UNLOCK-V9: domain%u max=%u kHz cpus=%u\n",
+			domain->id, domain->max_freq, oc_cpu_count);
+	}
+
 #endif
 
 	ufc_domain_init(domain);

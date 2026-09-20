@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 8U
+#define EXYNOS8895_HC_PROFILE_VERSION 9U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
