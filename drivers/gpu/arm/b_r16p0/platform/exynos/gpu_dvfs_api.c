@@ -28,6 +28,7 @@
 #include "gpu_dvfs_governor.h"
 #if defined(CONFIG_SOC_EXYNOS8895)
 #include <soc/samsung/exynos8895-hardcoded-profile.h>
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 #endif
 
 extern struct kbase_device *pkbdev;
@@ -152,6 +153,11 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 			platform->power_status ? 1 : 0,
 			platform->dvs_is_enabled ? 1 : 0,
 			platform->dvfs_pending);
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_GPU_REQ,
+		(unsigned int)clk, (unsigned int)target_clk,
+		(unsigned int)platform->cur_clock,
+		(unsigned int)platform->step, 0);
 #endif
 	if (target_clk < 0) {
 		mutex_unlock(&platform->gpu_clock_lock);
@@ -178,6 +184,12 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 			pr_emerg("G3D_FLIGHT GPU_FAIL target=%d cur=%d ret=%d volt=%d\n",
 				target_clk, platform->cur_clock, ret,
 				gpu_get_cur_voltage(platform));
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_GPU_FAIL,
+			(unsigned int)target_clk,
+			(unsigned int)platform->cur_clock,
+			(unsigned int)gpu_get_cur_voltage(platform),
+			0, ret);
 #endif
 		mutex_unlock(&platform->gpu_clock_lock);
 		return ret;
@@ -188,6 +200,12 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 		pr_emerg("G3D_FLIGHT GPU_DVFS_OK target=%d cur=%d volt=%d margin=%d\n",
 			target_clk, platform->cur_clock,
 			gpu_get_cur_voltage(platform), platform->voltage_margin);
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_GPU_OK,
+		(unsigned int)target_clk,
+		(unsigned int)platform->cur_clock,
+		(unsigned int)gpu_get_cur_voltage(platform),
+		(unsigned int)platform->voltage_margin, 0);
 #endif
 #endif
 	ret = gpu_update_cur_level(platform);
@@ -214,6 +232,12 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 		pr_emerg("G3D_FLIGHT GPU_DONE prev=%d target=%d cur=%d volt=%d step=%d\n",
 			prev_clk, target_clk, platform->cur_clock,
 			gpu_get_cur_voltage(platform), platform->step);
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_GPU_DONE,
+		(unsigned int)target_clk,
+		(unsigned int)prev_clk,
+		(unsigned int)platform->cur_clock,
+		(unsigned int)gpu_get_cur_voltage(platform), 0);
 #endif
 
 	return ret;

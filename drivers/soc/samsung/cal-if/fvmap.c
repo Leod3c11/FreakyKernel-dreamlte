@@ -9,6 +9,11 @@
 #include <linux/seq_file.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/ioport.h>
+#include <linux/proc_fs.h>
+#include <linux/spinlock.h>
 #include <soc/samsung/cal-if.h>
 #if defined(CONFIG_SOC_EXYNOS8895)
 #include <soc/samsung/exynos8895-g3d-hardcoded.h>
@@ -122,6 +127,243 @@ early_param("cp", get_cp_volt);
 #if defined(CONFIG_SOC_EXYNOS8895)
 static bool exynos8895_g3d_sram_active;
 static bool exynos8895_g3d_cal_active;
+
+
+#define EXYNOS8895_G3D_PERSIST_MAGIC      0x47334450U
+#define EXYNOS8895_G3D_PERSIST_VERSION    1U
+#define EXYNOS8895_G3D_PERSIST_HDR_SIZE   64U
+
+#define G3D_PERSIST_OFF_MAGIC       0U
+#define G3D_PERSIST_OFF_VERSION     4U
+#define G3D_PERSIST_OFF_CAPACITY    8U
+#define G3D_PERSIST_OFF_HEAD       12U
+#define G3D_PERSIST_OFF_BOOT       16U
+
+struct exynos8895_g3d_persist_event {
+	unsigned int seq;
+	unsigned int boot;
+	unsigned int stage;
+	unsigned int req;
+	unsigned int a;
+	unsigned int b;
+	unsigned int c;
+	int ret;
+};
+
+static void __iomem *exynos8895_g3d_persist_base;
+static unsigned int exynos8895_g3d_persist_size;
+static unsigned int exynos8895_g3d_persist_capacity;
+static DEFINE_RAW_SPINLOCK(exynos8895_g3d_persist_lock);
+
+static const char *exynos8895_g3d_persist_stage_name(unsigned int stage)
+{
+	switch (stage) {
+	case EXYNOS8895_G3D_PERSIST_BOOT: return "BOOT";
+	case EXYNOS8895_G3D_PERSIST_FVMAP_ENTER: return "FVMAP_ENTER";
+	case EXYNOS8895_G3D_PERSIST_FVMAP_EXPANDED: return "FVMAP_EXPANDED";
+	case EXYNOS8895_G3D_PERSIST_FVMAP_REFRESH: return "FVMAP_REFRESH";
+	case EXYNOS8895_G3D_PERSIST_GPU_REQ: return "GPU_REQ";
+	case EXYNOS8895_G3D_PERSIST_GPU_FAIL: return "GPU_FAIL";
+	case EXYNOS8895_G3D_PERSIST_GPU_OK: return "GPU_OK";
+	case EXYNOS8895_G3D_PERSIST_GPU_DONE: return "GPU_DONE";
+	case EXYNOS8895_G3D_PERSIST_CAL_REQ: return "CAL_REQ";
+	case EXYNOS8895_G3D_PERSIST_FVMAP_OK: return "FVMAP_OK";
+	case EXYNOS8895_G3D_PERSIST_FVMAP_FAIL: return "FVMAP_FAIL";
+	case EXYNOS8895_G3D_PERSIST_ACPM_BEGIN: return "ACPM_BEGIN";
+	case EXYNOS8895_G3D_PERSIST_ACPM_END: return "ACPM_END";
+	case EXYNOS8895_G3D_PERSIST_PLL: return "PLL";
+	case EXYNOS8895_G3D_PERSIST_CORE: return "CORE";
+	case EXYNOS8895_G3D_PERSIST_CAL_DONE: return "CAL_DONE";
+	case EXYNOS8895_G3D_PERSIST_RUNTIME_MAX: return "RUNTIME_MAX";
+	default: return "UNKNOWN";
+	}
+}
+
+void exynos8895_g3d_persist_log(unsigned int stage,
+				unsigned int req,
+				unsigned int a,
+				unsigned int b,
+				unsigned int c,
+				int ret)
+{
+	struct exynos8895_g3d_persist_event ev;
+	unsigned long flags;
+	unsigned int head;
+	unsigned int boot;
+	unsigned int slot;
+	unsigned int off;
+
+	if (!exynos8895_g3d_persist_base ||
+	    !exynos8895_g3d_persist_capacity)
+		return;
+
+	raw_spin_lock_irqsave(&exynos8895_g3d_persist_lock, flags);
+
+	head = readl(exynos8895_g3d_persist_base +
+		     G3D_PERSIST_OFF_HEAD);
+	boot = readl(exynos8895_g3d_persist_base +
+		     G3D_PERSIST_OFF_BOOT);
+
+	slot = head % exynos8895_g3d_persist_capacity;
+	off = EXYNOS8895_G3D_PERSIST_HDR_SIZE +
+	      slot * sizeof(struct exynos8895_g3d_persist_event);
+
+	ev.seq = head;
+	ev.boot = boot;
+	ev.stage = stage;
+	ev.req = req;
+	ev.a = a;
+	ev.b = b;
+	ev.c = c;
+	ev.ret = ret;
+
+	memcpy_toio(exynos8895_g3d_persist_base + off, &ev, sizeof(ev));
+	wmb();
+	writel(head + 1U, exynos8895_g3d_persist_base +
+	       G3D_PERSIST_OFF_HEAD);
+	wmb();
+
+	raw_spin_unlock_irqrestore(&exynos8895_g3d_persist_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_g3d_persist_log);
+
+static int exynos8895_g3d_persist_show(struct seq_file *m, void *unused)
+{
+	struct exynos8895_g3d_persist_event ev;
+	unsigned int head;
+	unsigned int boot;
+	unsigned int start;
+	unsigned int seq;
+	unsigned int slot;
+	unsigned int off;
+
+	if (!exynos8895_g3d_persist_base) {
+		seq_puts(m, "G3D_PERSIST unavailable\n");
+		return 0;
+	}
+
+	head = readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_HEAD);
+	boot = readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_BOOT);
+	start = head > exynos8895_g3d_persist_capacity ?
+		head - exynos8895_g3d_persist_capacity : 0U;
+
+	seq_printf(m,
+		"G3D_PERSIST magic=0x%08x version=%u boot=%u head=%u capacity=%u size=%u\n",
+		readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_MAGIC),
+		readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_VERSION),
+		boot, head, exynos8895_g3d_persist_capacity,
+		exynos8895_g3d_persist_size);
+	seq_puts(m, "seq boot stage req a b c ret\n");
+
+	for (seq = start; seq < head; seq++) {
+		slot = seq % exynos8895_g3d_persist_capacity;
+		off = EXYNOS8895_G3D_PERSIST_HDR_SIZE +
+		      slot * sizeof(struct exynos8895_g3d_persist_event);
+		memcpy_fromio(&ev, exynos8895_g3d_persist_base + off,
+			      sizeof(ev));
+		if (ev.seq != seq)
+			continue;
+		seq_printf(m, "%u %u %s %u %u %u %u %d\n",
+			ev.seq, ev.boot,
+			exynos8895_g3d_persist_stage_name(ev.stage),
+			ev.req, ev.a, ev.b, ev.c, ev.ret);
+	}
+
+	return 0;
+}
+
+static int exynos8895_g3d_persist_open(struct inode *inode,
+				       struct file *file)
+{
+	return single_open(file, exynos8895_g3d_persist_show, NULL);
+}
+
+static const struct file_operations exynos8895_g3d_persist_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_g3d_persist_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+int exynos8895_g3d_persist_init(void)
+{
+	struct device_node *np;
+	struct resource res;
+	unsigned int magic;
+	unsigned int version;
+	unsigned int capacity;
+	unsigned int boot;
+	int ret;
+
+	if (exynos8895_g3d_persist_base)
+		return 0;
+
+	np = of_find_compatible_node(NULL, NULL, "leod,g3d-persistent-log");
+	if (!np)
+		return -ENODEV;
+
+	ret = of_address_to_resource(np, 0, &res);
+	of_node_put(np);
+	if (ret)
+		return ret;
+
+	exynos8895_g3d_persist_size = resource_size(&res);
+	if (exynos8895_g3d_persist_size <
+	    EXYNOS8895_G3D_PERSIST_HDR_SIZE +
+	    sizeof(struct exynos8895_g3d_persist_event) * 8U)
+		return -EINVAL;
+
+	exynos8895_g3d_persist_base =
+		ioremap(res.start, exynos8895_g3d_persist_size);
+	if (!exynos8895_g3d_persist_base)
+		return -ENOMEM;
+
+	capacity = (exynos8895_g3d_persist_size -
+		    EXYNOS8895_G3D_PERSIST_HDR_SIZE) /
+		   sizeof(struct exynos8895_g3d_persist_event);
+
+	magic = readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_MAGIC);
+	version = readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_VERSION);
+
+	if (magic != EXYNOS8895_G3D_PERSIST_MAGIC ||
+	    version != EXYNOS8895_G3D_PERSIST_VERSION ||
+	    readl(exynos8895_g3d_persist_base +
+		  G3D_PERSIST_OFF_CAPACITY) != capacity) {
+		memset_io(exynos8895_g3d_persist_base, 0,
+			  exynos8895_g3d_persist_size);
+		writel(EXYNOS8895_G3D_PERSIST_MAGIC,
+		       exynos8895_g3d_persist_base + G3D_PERSIST_OFF_MAGIC);
+		writel(EXYNOS8895_G3D_PERSIST_VERSION,
+		       exynos8895_g3d_persist_base + G3D_PERSIST_OFF_VERSION);
+		writel(capacity,
+		       exynos8895_g3d_persist_base + G3D_PERSIST_OFF_CAPACITY);
+		writel(0, exynos8895_g3d_persist_base + G3D_PERSIST_OFF_HEAD);
+		writel(1, exynos8895_g3d_persist_base + G3D_PERSIST_OFF_BOOT);
+		wmb();
+	} else {
+		boot = readl(exynos8895_g3d_persist_base + G3D_PERSIST_OFF_BOOT);
+		writel(boot + 1U,
+		       exynos8895_g3d_persist_base + G3D_PERSIST_OFF_BOOT);
+		wmb();
+	}
+
+	exynos8895_g3d_persist_capacity = capacity;
+
+	if (!proc_create("g3d_crashlog", 0444, NULL,
+			 &exynos8895_g3d_persist_fops))
+		pr_warn("G3D persist: failed to create /proc/g3d_crashlog\n");
+
+	exynos8895_g3d_persist_log(EXYNOS8895_G3D_PERSIST_BOOT,
+				   0, 0, 0, 0, 0);
+
+	pr_info("G3D persist: phys=%pa size=0x%x capacity=%u\n",
+		&res.start, exynos8895_g3d_persist_size,
+		exynos8895_g3d_persist_capacity);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(exynos8895_g3d_persist_init);
 
 bool exynos8895_g3d_hardcoded_active(void)
 {
@@ -463,6 +705,11 @@ int exynos8895_g3d_hardcoded_apply(void)
 	unsigned int i;
 	int ret;
 
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_FVMAP_ENTER,
+		0, exynos8895_g3d_sram_active ? 1U : 0U,
+		0, 0, 0);
+
 	if (!sram_fvmap_base)
 		return -EAGAIN;
 	if (!exynos8895_g3d_source_table_valid())
@@ -514,6 +761,10 @@ int exynos8895_g3d_hardcoded_apply(void)
 		pr_emerg("G3D_FLIGHT FVMAP_REFRESH lv=%u rv=0x%x table=0x%x pll=0x%x init=%u\n",
 			h->num_of_lv, h->o_ratevolt, h->o_tables,
 			clks->addr[0], h->init_lv);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_FVMAP_REFRESH,
+			h->num_of_lv, h->o_ratevolt,
+			h->o_tables, clks->addr[0], h->init_lv);
 		return 0;
 	}
 
@@ -636,6 +887,10 @@ int exynos8895_g3d_hardcoded_apply(void)
 		rv_off, table_off, pll_off, h->init_lv);
 	pr_emerg("G3D_FLIGHT FVMAP_EXPANDED levels=%u rv=0x%x table=0x%x pll=0x%x init=%u\n",
 		EXYNOS8895_G3D_OPP_COUNT, rv_off, table_off, pll_off, h->init_lv);
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_FVMAP_EXPANDED,
+		EXYNOS8895_G3D_OPP_COUNT, rv_off,
+		table_off, pll_off, h->init_lv);
 
 	ret = 0;
 
@@ -1463,6 +1718,7 @@ int fvmap_init(void __iomem *sram_base)
 	void __iomem *map_base;
 #if defined(CONFIG_SOC_EXYNOS8895)
 	int g3d_ret;
+	int persist_ret;
 #endif
 
 	map_base = kzalloc(FVMAP_SIZE, GFP_KERNEL);
@@ -1473,6 +1729,9 @@ int fvmap_init(void __iomem *sram_base)
 	sram_fvmap_base = sram_base;
 #if defined(CONFIG_SOC_EXYNOS8895)
 	exynos8895_soc_debugfs_init();
+	persist_ret = exynos8895_g3d_persist_init();
+	if (persist_ret)
+		pr_err("G3D persist: init failed (%d)\n", persist_ret);
 #endif
 	pr_info("%s:fvmap initialize %pK\n", __func__, sram_base);
 

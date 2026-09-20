@@ -30,4 +30,32 @@ bool exynos8895_g3d_hardcoded_active(void);
 bool exynos8895_g3d_hardcoded_sync_cal(void);
 int exynos8895_g3d_sram_debug_dump(char *buf, unsigned int size);
 
+enum exynos8895_g3d_persist_stage {
+	EXYNOS8895_G3D_PERSIST_BOOT = 1,
+	EXYNOS8895_G3D_PERSIST_FVMAP_ENTER = 2,
+	EXYNOS8895_G3D_PERSIST_FVMAP_EXPANDED = 3,
+	EXYNOS8895_G3D_PERSIST_FVMAP_REFRESH = 4,
+	EXYNOS8895_G3D_PERSIST_GPU_REQ = 10,
+	EXYNOS8895_G3D_PERSIST_GPU_FAIL = 11,
+	EXYNOS8895_G3D_PERSIST_GPU_OK = 12,
+	EXYNOS8895_G3D_PERSIST_GPU_DONE = 13,
+	EXYNOS8895_G3D_PERSIST_CAL_REQ = 20,
+	EXYNOS8895_G3D_PERSIST_FVMAP_OK = 21,
+	EXYNOS8895_G3D_PERSIST_FVMAP_FAIL = 22,
+	EXYNOS8895_G3D_PERSIST_ACPM_BEGIN = 23,
+	EXYNOS8895_G3D_PERSIST_ACPM_END = 24,
+	EXYNOS8895_G3D_PERSIST_PLL = 25,
+	EXYNOS8895_G3D_PERSIST_CORE = 26,
+	EXYNOS8895_G3D_PERSIST_CAL_DONE = 27,
+	EXYNOS8895_G3D_PERSIST_RUNTIME_MAX = 30,
+};
+
+int exynos8895_g3d_persist_init(void);
+void exynos8895_g3d_persist_log(unsigned int stage,
+				unsigned int req,
+				unsigned int a,
+				unsigned int b,
+				unsigned int c,
+				int ret);
+
 #endif /* __EXYNOS8895_G3D_HARDCODED_H__ */

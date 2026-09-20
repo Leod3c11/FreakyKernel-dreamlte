@@ -19,6 +19,7 @@
 #include <linux/pm_qos.h>
 #if defined(CONFIG_SOC_EXYNOS8895)
 #include <soc/samsung/exynos8895-hardcoded-profile.h>
+#include <soc/samsung/exynos8895-g3d-hardcoded.h>
 #endif
 #include <mali_kbase_pm.h>
 
@@ -390,6 +391,10 @@ static ssize_t set_g3d_runtime_max(struct device *dev,
 
 	pr_emerg("G3D_FLIGHT RUNTIME_MAX old=%d new=%d level=%d\n",
 		old_clock, clock, level);
+	exynos8895_g3d_persist_log(
+		EXYNOS8895_G3D_PERSIST_RUNTIME_MAX,
+		(unsigned int)clock, (unsigned int)old_clock,
+		(unsigned int)level, 0, 0);
 
 	return count;
 }

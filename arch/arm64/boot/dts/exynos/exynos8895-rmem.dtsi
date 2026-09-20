@@ -32,6 +32,12 @@
 			reg = <0x0 0xC0000000 0x10000>;
 		};
 
+		g3d_persist_log: g3d-persist-log@c03f0000 {
+			compatible = "leod,g3d-persistent-log";
+			reg = <0x0 0xC03F0000 0x10000>;
+			no-map;
+		};
+
 		camera {
 			compatible = "exynos8890-ion,camera";
 			ion,recyclable;

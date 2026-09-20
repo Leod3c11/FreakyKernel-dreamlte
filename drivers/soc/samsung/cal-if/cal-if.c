@@ -88,16 +88,27 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 			pr_emerg("G3D_FLIGHT CAL_REQ rate=%lu volt=%u pms=%u/%u/%u\n",
 				rate, opp->voltage_uv,
 				opp->pll_m, opp->pll_p, opp->pll_s);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_CAL_REQ,
+			(unsigned int)rate, opp->voltage_uv,
+			opp->pll_m,
+			(opp->pll_p << 16) | opp->pll_s, 0);
 
 		ret = exynos8895_g3d_hardcoded_apply();
 		if (ret) {
 			pr_emerg("G3D_FLIGHT FVMAP_FAIL rate=%lu ret=%d\n", rate, ret);
+			exynos8895_g3d_persist_log(
+				EXYNOS8895_G3D_PERSIST_FVMAP_FAIL,
+				(unsigned int)rate, 0, 0, 0, ret);
 			pr_err("G3D hardcoded: SRAM apply failed before %lu kHz (%d)\n", rate, ret);
 			return ret;
 		}
 
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT FVMAP_OK rate=%lu\n", rate);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_FVMAP_OK,
+			(unsigned int)rate, 0, 0, 0, 0);
 
 		/*
 		 * V11 expands the live FVMap itself, so ACPM receives the real
@@ -105,9 +116,15 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		 */
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT ACPM_BEGIN rate=%lu\n", rate);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_ACPM_BEGIN,
+			(unsigned int)rate, 0, 0, 0, 0);
 		ret = exynos_acpm_set_rate(EXYNOS8895_G3D_ACPM_INDEX, rate);
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT ACPM_END rate=%lu ret=%d\n", rate, ret);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_ACPM_END,
+			(unsigned int)rate, 0, 0, 0, ret);
 		if (ret) {
 			pr_err("G3D expanded: ACPM rate %lu kHz failed (%d)\n",
 			       rate, ret);
@@ -122,6 +139,10 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT PLL_READ req=%lu pll=%lu fw=%lu\n",
 				rate, pll_rate, fw_rate);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_PLL,
+			(unsigned int)rate, (unsigned int)pll_rate,
+			(unsigned int)fw_rate, 0, 0);
 
 		pr_info("G3D expanded transition: requested=%lu fw=%lu pll=%lu kHz PMS=%u/%u/%u\n",
 			rate, fw_rate, pll_rate,
@@ -165,6 +186,10 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT CORE_READ req=%lu pll=%lu core=%lu\n",
 				rate, pll_rate, core_rate);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_CORE,
+			(unsigned int)rate, (unsigned int)pll_rate,
+			(unsigned int)core_rate, 0, 0);
 		if (core_rate != rate) {
 			pr_err("G3D hardcoded: core-path mismatch logical=%lu pll=%lu core=%lu kHz\n",
 			       rate, pll_rate, core_rate);
@@ -180,6 +205,10 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
 			pr_emerg("G3D_FLIGHT CAL_DONE rate=%lu pll=%lu core=%lu\n",
 				rate, pll_rate, core_rate);
+		exynos8895_g3d_persist_log(
+			EXYNOS8895_G3D_PERSIST_CAL_DONE,
+			(unsigned int)rate, (unsigned int)pll_rate,
+			(unsigned int)core_rate, 0, 0);
 		return 0;
 	}
 #endif
