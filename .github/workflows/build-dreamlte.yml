@@ -168,7 +168,7 @@ jobs:
 
           chmod +x /tmp/magiskboot
 
-      - name: Build boot.img with freshly compiled DTB
+      - name: Build boot.img preserving original DTB
         shell: bash
         run: |
           set -e
@@ -208,42 +208,6 @@ jobs:
 
           cp ramdisk.cpio /tmp/original-ramdisk.cpio
           cp extra /tmp/original-extra
-
-          # INJECT_FRESH_DREAMLTE_DTB
-          echo "============================================================"
-          echo " INJECT FRESH DREAMLTE DTB"
-          echo "============================================================"
-
-          NEW_DTB="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"
-
-          test -s "$NEW_DTB" || {
-            echo "::error::dtb.img compilado nao existe"
-            exit 1
-          }
-
-          echo "Checking persistent-log marker in compiled DTB..."
-
-          if ! strings "$NEW_DTB" | grep -q "leod,g3d-persistent-log"; then
-            echo "::error::Novo dtb.img nao contem leod,g3d-persistent-log"
-            echo
-            echo "Individual DTBs:"
-            find "$GITHUB_WORKSPACE/out/arch/arm64/boot/dts" \
-                 -type f -name "*.dtb" -print 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "Compiled DTB marker: OK"
-
-          cp "$NEW_DTB" extra
-          test -s extra
-
-          if ! strings extra | grep -q "leod,g3d-persistent-log"; then
-            echo "::error::Marker desapareceu do componente extra"
-            exit 1
-          fi
-
-          echo "Fresh compiled DTB installed into extra"
-          sha256sum "$NEW_DTB" extra
 
           sha256sum /tmp/original-ramdisk.cpio \
             > /tmp/original-ramdisk.sha256
@@ -344,24 +308,17 @@ jobs:
 
           echo
           echo "========================================"
-          echo "============================================================"
-          echo " VERIFY FRESH DREAMLTE DTB / EXTRA"
-          echo "============================================================"
+          echo " VERIFY ORIGINAL DTB / EXTRA"
+          echo "========================================"
 
-          NEW_DTB="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtb.img"
+          cmp -s \
+            extra \
+            /tmp/original-extra || {
+              echo "::error::DTB/extra original foi alterado"
+              exit 1
+          }
 
-          if ! cmp -s extra "$NEW_DTB"; then
-            echo "::error::extra nao corresponde ao dtb.img recem-compilado"
-            sha256sum extra "$NEW_DTB" || true
-            exit 1
-          fi
-
-          if ! strings extra | grep -q "leod,g3d-persistent-log"; then
-            echo "::error::extra nao contem leod,g3d-persistent-log"
-            exit 1
-          fi
-
-          echo "Fresh DTB/extra: OK"
+          echo "DTB/extra original: OK"
 
           echo
           echo "========================================"
@@ -381,7 +338,7 @@ jobs:
           echo " BOOT VALIDATION PASSED"
           echo "========================================"
           echo "Only the kernel payload changed."
-          echo "Ramdisk preserved; DTB/extra uses freshly compiled dreamlte DTB."
+          echo "Ramdisk and DTB/extra are byte-identical to boot-base.img."
 
       - name: Final artifact information
         run: |
