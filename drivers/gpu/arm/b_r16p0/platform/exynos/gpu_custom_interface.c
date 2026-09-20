@@ -343,6 +343,57 @@ static ssize_t show_clock_exact(struct device *dev, struct device_attribute *att
 	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_pll_rate_exact());
 }
 
+extern int exynos8895_g3d_runtime_max_khz;
+
+static ssize_t show_g3d_runtime_max(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+		exynos8895_g3d_runtime_max_khz);
+}
+
+static ssize_t set_g3d_runtime_max(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	int clock;
+	int old_clock;
+	int level;
+	struct exynos_context *platform =
+		(struct exynos_context *)pkbdev->platform_context;
+
+	if (!platform)
+		return -ENODEV;
+
+	if (sysfs_streq("0", buf)) {
+		clock = EXYNOS8895_G3D_AUTONOMOUS_MAX_KHZ;
+	} else if (kstrtoint(buf, 0, &clock)) {
+		return -EINVAL;
+	}
+
+	level = gpu_dvfs_get_level(clock);
+	if (level < 0) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D runtime ceiling: %d kHz not present in table\n",
+			clock);
+		return -EINVAL;
+	}
+
+	if (clock < platform->gpu_min_clock || clock > platform->gpu_max_clock) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"G3D runtime ceiling: %d outside %d..%d\n",
+			clock, platform->gpu_min_clock, platform->gpu_max_clock);
+		return -ERANGE;
+	}
+
+	old_clock = exynos8895_g3d_runtime_max_khz;
+	exynos8895_g3d_runtime_max_khz = clock;
+
+	pr_emerg("G3D_FLIGHT RUNTIME_MAX old=%d new=%d level=%d\n",
+		old_clock, clock, level);
+
+	return count;
+}
+
 static ssize_t show_clock_core(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%lu\n", cal_g3d_get_core_rate_exact());
@@ -1648,6 +1699,7 @@ DEVICE_ATTR(clock, S_IRUGO|S_IWUSR, show_clock, set_clock);
 #if defined(CONFIG_SOC_EXYNOS8895)
 DEVICE_ATTR(clock_exact, S_IRUGO, show_clock_exact, NULL);
 DEVICE_ATTR(clock_core, S_IRUGO, show_clock_core, NULL);
+DEVICE_ATTR(g3d_runtime_max, S_IRUGO|S_IWUSR, show_g3d_runtime_max, set_g3d_runtime_max);
 DEVICE_ATTR(pll_pms, S_IRUGO, show_pll_pms, NULL);
 DEVICE_ATTR(g3d_diag, S_IRUGO, show_g3d_diag, NULL);
 DEVICE_ATTR(soc_profile, S_IRUGO, show_soc_profile, NULL);
@@ -2220,6 +2272,11 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [clock_core]\n");
 		goto out;
 	}
+	if (device_create_file(dev, &dev_attr_g3d_runtime_max)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
+			"couldn't create sysfs file [g3d_runtime_max]\n");
+		goto out;
+	}
 	if (device_create_file(dev, &dev_attr_pll_pms)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [pll_pms]\n");
 		goto out;
@@ -2425,6 +2482,7 @@ void gpu_remove_sysfs_file(struct device *dev)
 #if defined(CONFIG_SOC_EXYNOS8895)
 	device_remove_file(dev, &dev_attr_clock_exact);
 	device_remove_file(dev, &dev_attr_clock_core);
+	device_remove_file(dev, &dev_attr_g3d_runtime_max);
 	device_remove_file(dev, &dev_attr_pll_pms);
 	device_remove_file(dev, &dev_attr_g3d_diag);
 #if defined(CONFIG_SOC_EXYNOS8895)

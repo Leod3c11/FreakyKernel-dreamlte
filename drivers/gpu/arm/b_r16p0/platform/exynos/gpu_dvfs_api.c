@@ -32,6 +32,10 @@
 
 extern struct kbase_device *pkbdev;
 
+#if defined(CONFIG_SOC_EXYNOS8895)
+int exynos8895_g3d_runtime_max_khz = EXYNOS8895_G3D_AUTONOMOUS_MAX_KHZ;
+#endif
+
 static int gpu_check_target_clock(struct exynos_context *platform, int clock)
 {
 	int target_clock = clock;
@@ -47,17 +51,13 @@ static int gpu_check_target_clock(struct exynos_context *platform, int clock)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
 	/*
-	 * EXYNOS8895-G3D-BRINGUP-GATE-V13
+	 * EXYNOS8895-G3D-RUNTIME-CEILING-V16
 	 *
-	 * Keep the complete expanded 11-row table visible, but do not let the
-	 * automatic governor enter experimental OPPs during Android/UI bring-up.
-	 *
-	 * The manual sysfs clock path disables DVFS before calling this function,
-	 * therefore it returns above before this clamp and can still select every
-	 * expanded row (700/800/850/900/1000 MHz) one at a time.
+	 * Boot conservatively at 546 MHz, but allow the ceiling to be raised
+	 * at runtime through g3d_runtime_max. DVFS and TMU remain enabled.
 	 */
-	if (target_clock > EXYNOS8895_G3D_AUTONOMOUS_MAX_KHZ)
-		target_clock = EXYNOS8895_G3D_AUTONOMOUS_MAX_KHZ;
+	if (target_clock > exynos8895_g3d_runtime_max_khz)
+		target_clock = exynos8895_g3d_runtime_max_khz;
 #endif
 
 	GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u, "clock: %d, min: %d, max: %d\n", clock, platform->min_lock, platform->max_lock);
