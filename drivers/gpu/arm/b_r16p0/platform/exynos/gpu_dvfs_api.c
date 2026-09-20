@@ -143,6 +143,16 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 #endif /* CONFIG_MALI_DVFS */
 
 	target_clk = gpu_check_target_clock(platform, clk);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ ||
+	    target_clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ ||
+	    platform->cur_clock >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
+		pr_emerg("G3D_FLIGHT GPU_REQ req=%d target=%d cur=%d step=%d power=%d dvs=%d pending=%d\n",
+			clk, target_clk, platform->cur_clock, platform->step,
+			platform->power_status ? 1 : 0,
+			platform->dvs_is_enabled ? 1 : 0,
+			platform->dvfs_pending);
+#endif
 	if (target_clk < 0) {
 		mutex_unlock(&platform->gpu_clock_lock);
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
@@ -162,9 +172,23 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 #ifdef CONFIG_MALI_DVFS
 	ret = gpu_control_set_dvfs(kbdev, target_clk);
 	if (ret) {
+#if defined(CONFIG_SOC_EXYNOS8895)
+		if (target_clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ ||
+		    platform->cur_clock >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
+			pr_emerg("G3D_FLIGHT GPU_FAIL target=%d cur=%d ret=%d volt=%d\n",
+				target_clk, platform->cur_clock, ret,
+				gpu_get_cur_voltage(platform));
+#endif
 		mutex_unlock(&platform->gpu_clock_lock);
 		return ret;
 	}
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (target_clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ ||
+	    platform->cur_clock >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
+		pr_emerg("G3D_FLIGHT GPU_DVFS_OK target=%d cur=%d volt=%d margin=%d\n",
+			target_clk, platform->cur_clock,
+			gpu_get_cur_voltage(platform), platform->voltage_margin);
+#endif
 #endif
 	ret = gpu_update_cur_level(platform);
 
@@ -184,6 +208,13 @@ int gpu_set_target_clk_vol(int clk, bool pending_is_allowed)
 
 	GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u, "clk[%d -> %d], vol[%d (margin : %d)]\n",
 		prev_clk, target_clk, gpu_get_cur_voltage(platform), platform->voltage_margin);
+#if defined(CONFIG_SOC_EXYNOS8895)
+	if (target_clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ ||
+	    prev_clk >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
+		pr_emerg("G3D_FLIGHT GPU_DONE prev=%d target=%d cur=%d volt=%d step=%d\n",
+			prev_clk, target_clk, platform->cur_clock,
+			gpu_get_cur_voltage(platform), platform->step);
+#endif
 
 	return ret;
 }

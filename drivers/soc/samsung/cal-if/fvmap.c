@@ -629,6 +629,8 @@ int exynos8895_g3d_hardcoded_apply(void)
 		EXYNOS8895_G3D_STOCK_FVMAP_COUNT,
 		EXYNOS8895_G3D_OPP_COUNT,
 		rv_off, table_off, pll_off, h->init_lv);
+	pr_emerg("G3D_FLIGHT FVMAP_EXPANDED levels=%u rv=0x%x table=0x%x pll=0x%x init=%u\n",
+		EXYNOS8895_G3D_OPP_COUNT, rv_off, table_off, pll_off, h->init_lv);
 
 	ret = 0;
 
