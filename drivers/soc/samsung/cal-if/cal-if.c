@@ -25,29 +25,32 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 	return 0;
 }
 
+
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
-		return exynos8895_g3d_opp_table[0].clock_khz;
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+		return exynos8895_hc_domain(GET_IDX(id))->policy_max_khz;
 #endif
 	return vclk_get_max_freq(id);
 }
 
+
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
-		return exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT - 1].clock_khz;
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+		return exynos8895_hc_domain(GET_IDX(id))->policy_min_khz;
 #endif
 	return vclk_get_min_freq(id);
 }
 
+
 unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX)
-		return EXYNOS8895_G3D_OPP_COUNT;
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+		return exynos8895_hc_domain(GET_IDX(id))->level_count;
 #endif
 	return vclk_get_lv_num(id);
 }
@@ -225,22 +228,14 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 	return ret;
 }
 
+
 int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 {
-	int ret;
 #if defined(CONFIG_SOC_EXYNOS8895)
-	unsigned int i;
-
-	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
-		for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++)
-			table[i] = exynos8895_g3d_opp_table[i].clock_khz;
-		return EXYNOS8895_G3D_OPP_COUNT;
-	}
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+		return exynos8895_hc_fill_rate_table(GET_IDX(id), table);
 #endif
-
-	ret = vclk_get_rate_table(id, table);
-
-	return ret;
+	return vclk_get_rate_table(id, table);
 }
 
 #if defined(CONFIG_SOC_EXYNOS8895)

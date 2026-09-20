@@ -1,5 +1,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/err.h>
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/io.h>
@@ -129,9 +131,6 @@ EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_active);
 
 
 /* Exact PLL-derived aliases reported by the supplied PLL_G3D all_dump. */
-static const unsigned int exynos8895_g3d_stock_pll_rate[EXYNOS8895_G3D_OPP_COUNT] = {
-	838000, 764000, 682000, 572000, 546000, 455000, 384000, 338000, 260000,
-};
 
 static bool exynos8895_g3d_opp_valid(
 	const struct exynos8895_g3d_hardcoded_opp *opp)
@@ -586,6 +585,127 @@ static int exynos8895_soc_live_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+
+static const char *exynos8895_hc_trans_name(enum exynos8895_hc_transition_owner o)
+{
+	switch (o) {
+	case EXYNOS8895_HC_TRANS_ACPM:
+		return "acpm";
+	case EXYNOS8895_HC_TRANS_HYBRID:
+		return "hybrid";
+	case EXYNOS8895_HC_TRANS_DIRECT:
+		return "direct";
+	case EXYNOS8895_HC_TRANS_FIRMWARE_ONLY:
+		return "firmware-only";
+	default:
+		return "unknown";
+	}
+}
+
+static int exynos8895_soc_profile_show(struct seq_file *m, void *unused)
+{
+	unsigned int i, j;
+
+	seq_printf(m, "EXYNOS8895_HARDCODED_PROFILE version=%u\n",
+		   EXYNOS8895_HC_PROFILE_VERSION);
+	seq_puts(m,
+		 "idx name policy_min policy_max table_min table_max levels members pll mux div transition regulator\n");
+
+	for (i = 0; i < EXYNOS8895_HC_DOMAIN_COUNT; i++) {
+		const struct exynos8895_hc_domain_desc *d =
+			exynos8895_hc_domain(i);
+
+		seq_printf(m, "%u %s %u %u %u %u %u %u %u %u %u %s %s\n",
+			   i, d->name,
+			   d->policy_min_khz, d->policy_max_khz,
+			   d->table_min_khz, d->table_max_khz,
+			   d->level_count, d->member_count, d->pll_count,
+			   d->mux_count, d->div_count,
+			   exynos8895_hc_trans_name(d->transition_owner),
+			   d->regulator_name ? d->regulator_name : "firmware/shared");
+
+		seq_puts(m, "  LEVEL rate_khz volt_uv policy_ok raw_ok\n");
+		for (j = 0; j < d->level_count; j++) {
+			unsigned int rate = exynos8895_hc_level_rate(i, j);
+			unsigned int volt = exynos8895_hc_level_voltage(i, j);
+
+			seq_printf(m, "  %u %u %u %u %u\n",
+				   j, rate, volt,
+				   exynos8895_hc_rate_allowed(i, rate, false),
+				   exynos8895_hc_rate_allowed(i, rate, true));
+		}
+	}
+
+	return 0;
+}
+
+static int exynos8895_soc_lut_show(struct seq_file *m, void *unused)
+{
+	unsigned int count;
+	unsigned int i, j, k;
+
+	count = cmucal_get_list_size(ACPM_VCLK_TYPE);
+	if (count > EXYNOS8895_HC_DOMAIN_COUNT)
+		count = EXYNOS8895_HC_DOMAIN_COUNT;
+
+	for (i = 0; i < count; i++) {
+		struct vclk *vclk = cmucal_get_node(ACPM_VCLK_TYPE | i);
+
+		seq_printf(m, "\n=== LUT %u %s ===\n", i,
+			   exynos8895_hc_domain(i)->name);
+		if (!vclk || !vclk->lut || !vclk->list) {
+			seq_puts(m, "unavailable\n");
+			continue;
+		}
+
+		seq_printf(m,
+			   "num_rates=%u num_list=%u switch_info=%u seq=%u\n",
+			   vclk->num_rates, vclk->num_list,
+			   vclk->switch_info ? 1 : 0,
+			   vclk->seq ? 1 : 0);
+
+		seq_puts(m, "MEMBERS idx cal_id\n");
+		for (j = 0; j < vclk->num_list; j++)
+			seq_printf(m, "%u 0x%x\n", j, vclk->list[j]);
+
+		for (j = 0; j < vclk->num_rates; j++) {
+			seq_printf(m, "RATE %u %u PARAMS",
+				   j, vclk->lut[j].rate);
+			for (k = 0; k < vclk->num_list; k++)
+				seq_printf(m, " %d", vclk->lut[j].params[k]);
+			seq_putc(m, '\n');
+		}
+	}
+
+	return 0;
+}
+
+static int exynos8895_soc_profile_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, exynos8895_soc_profile_show, inode->i_private);
+}
+
+static int exynos8895_soc_lut_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, exynos8895_soc_lut_show, inode->i_private);
+}
+
+static const struct file_operations exynos8895_soc_profile_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_soc_profile_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static const struct file_operations exynos8895_soc_lut_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_soc_lut_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int exynos8895_soc_fvmap_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, exynos8895_soc_fvmap_show, inode->i_private);
@@ -637,22 +757,16 @@ static int exynos8895_soc_find_domain(const char *name)
 }
 
 static bool exynos8895_soc_rate_supported(unsigned int id,
-					   unsigned long rate)
+					   unsigned long rate,
+					   bool raw)
 {
-	unsigned long table[64];
-	int count;
-	int i;
+	unsigned int idx;
 
-	memset(table, 0, sizeof(table));
-	count = cal_dfs_get_rate_table(id, table);
-	if (count <= 0 || count > ARRAY_SIZE(table))
+	if (!IS_ACPM_VCLK(id))
 		return false;
 
-	for (i = 0; i < count; i++)
-		if (table[i] == rate)
-			return true;
-
-	return false;
+	idx = GET_IDX(id);
+	return exynos8895_hc_rate_allowed(idx, rate, raw);
 }
 
 static ssize_t exynos8895_soc_control_read(struct file *file,
@@ -662,12 +776,14 @@ static ssize_t exynos8895_soc_control_read(struct file *file,
 	static const char help[] =
 		"Exynos8895 SoC runtime control\n"
 		"WRITE commands:\n"
-		"  rate <domain> <kHz>\n"
+		"  rate <domain> <kHz>       (respects policy_min/max)\n"
+		"  rate_raw <domain> <kHz>   (known FVMap row, known voltage)\n"
 		"  margin <domain> <delta_uV>\n"
 		"\n"
 		"domains: mif int cpucl0 cpucl1 g3d intcam cam disp g3dm cp\n"
 		"\n"
-		"rate is accepted only when present in cal_dfs_get_rate_table().\n"
+		"rate is limited by the central profile policy.\n"
+		"rate_raw bypasses policy limits but still requires a known row and non-zero voltage.\n"
 		"margin uses cal_dfs_set_volt_margin(); it is a voltage DELTA, not absolute uV.\n"
 		"CPU/devfreq governors may change a requested rate again after this write.\n";
 
@@ -702,15 +818,21 @@ static ssize_t exynos8895_soc_control_write(struct file *file,
 
 	id = ACPM_VCLK_TYPE | idx;
 
-	if (!strcmp(cmd, "rate")) {
+	if (!strcmp(cmd, "rate") || !strcmp(cmd, "rate_raw")) {
+		bool raw = !strcmp(cmd, "rate_raw");
+
 		if (value <= 0)
 			return -EINVAL;
 
-		if (!exynos8895_soc_rate_supported(id, value)) {
-			pr_err("Exynos8895 SoC control: unsupported rate domain=%s rate=%ld\n",
-			       domain, value);
-			return -EINVAL;
+		if (!exynos8895_soc_rate_supported(id, value, raw)) {
+			pr_err("Exynos8895 SoC control: rejected %s domain=%s rate=%ld\n",
+			       raw ? "rate_raw" : "rate", domain, value);
+			return -EPERM;
 		}
+
+		if (raw)
+			pr_warn("Exynos8895 SoC control: RAW policy bypass domain=%s rate=%ld\n",
+				domain, value);
 
 		ret = cal_dfs_set_rate(id, value);
 		if (ret) {
@@ -719,7 +841,8 @@ static ssize_t exynos8895_soc_control_write(struct file *file,
 			return ret;
 		}
 
-		pr_info("Exynos8895 SoC control: rate domain=%s requested=%ld actual=%lu\n",
+		pr_info("Exynos8895 SoC control: %s domain=%s requested=%ld actual=%lu\n",
+			raw ? "rate_raw" : "rate",
 			domain, value, cal_dfs_get_rate(id));
 		return count;
 	}
@@ -755,13 +878,19 @@ static void exynos8895_soc_debugfs_init(void)
 
 	exynos8895_soc_debugfs_root =
 		debugfs_create_dir("exynos8895_soc", NULL);
-	if (!exynos8895_soc_debugfs_root)
+	if (IS_ERR_OR_NULL(exynos8895_soc_debugfs_root)) {
+		exynos8895_soc_debugfs_root = NULL;
 		return;
+	}
 
 	debugfs_create_file("fvmap", 0444, exynos8895_soc_debugfs_root,
 			    NULL, &exynos8895_soc_fvmap_fops);
 	debugfs_create_file("live", 0444, exynos8895_soc_debugfs_root,
 			    NULL, &exynos8895_soc_live_fops);
+	debugfs_create_file("profile", 0444, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_profile_fops);
+	debugfs_create_file("lut", 0444, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_lut_fops);
 	debugfs_create_file("control", 0600, exynos8895_soc_debugfs_root,
 			    NULL, &exynos8895_soc_control_fops);
 

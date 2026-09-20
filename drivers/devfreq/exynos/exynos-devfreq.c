@@ -847,7 +847,7 @@ static int exynos_devfreq_parse_ect(struct exynos_devfreq_data *data, const char
 #if defined(CONFIG_SOC_EXYNOS8895)
     if (!exynos8895_hc_fill_devfreq_table(data, dvfs_domain_name)) {
         dev_info(data->dev,
-                 "Exynos8895 HC: %s source table owns %u OPPs\n",
+                 "Exynos8895 HC v5: %s profile publishes %u voltage-known OPPs\n",
                  dvfs_domain_name, data->max_state);
         return 0;
     }
@@ -974,7 +974,7 @@ static int exynos_devfreq_parse_dt(struct device_node *np, struct exynos_devfreq
 	    data->max_freq = EXYNOS8895_HC_MIF_MAX_KHZ;
 	    data->reboot_freq = EXYNOS8895_HC_MIF_REBOOT_KHZ;
 	    dev_info(data->dev,
-	             "Exynos8895 HC: MIF policy owns freq_info min=%u max=%u\n",
+	             "Exynos8895 HC v5: MIF safe policy min=%u max=%u\n",
 	             data->min_freq, data->max_freq);
 	}
 #endif
@@ -2159,7 +2159,7 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
             data->max_freq = EXYNOS8895_HC_MIF_MAX_KHZ;
         }
         dev_info(data->dev,
-                 "Exynos8895 HC: reassert source OPPs after init_prepare (%u levels)\n",
+                 "Exynos8895 HC v5: reassert profile OPPs after init_prepare (%u levels)\n",
                  data->max_state);
     }
 #endif
