@@ -1802,6 +1802,19 @@ u8 DREAM_A3_DA_HMD_ON_LTPS[] = {
 	0x8F, 0x07, 0x02, 0x00, 0x00, 0x80, 0xC0, 0x00,
 	0x00, 0x80
 };
+
+/* EXYNOS8895-D14015-LTPS75-V5B: stock LTPS + only byte[32] 0x0A -> 0x08 */
+u8 DREAM_A3_DA_OC75_LTPS_V5B[] = {
+	0xCB, 0x04, 0x01, 0x00, 0x00, 0x00, 0x60, 0x80,
+	0x00, 0x00, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x1D, 0x9C, 0x00, 0x00, 0x00, 0x00,
+	0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB8,
+	0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x13, 0x15,
+	0x06, 0x8F, 0x07, 0x02, 0x00, 0x00, 0x80, 0xC0,
+	0x00, 0x00, 0x00,
+};
+
 DEFINE_VARIABLE_PACKET(dream_a3_da_hmd_on_aor, DSI_PKT_TYPE_WR, DREAM_A3_DA_HMD_ON_AOR, &dream_a3_da_maptbl[HMD_AOR_MAPTBL], 1);
 DEFINE_STATIC_PACKET(dream_a3_da_hmd_on_ltps, DSI_PKT_TYPE_WR, DREAM_A3_DA_HMD_ON_LTPS);
 /* Command for hmd off */
@@ -1824,6 +1837,7 @@ u8 DREAM_A3_DA_HMD_OFF_LTPS[] = {
 
 DEFINE_VARIABLE_PACKET(dream_a3_da_hmd_off_aor, DSI_PKT_TYPE_WR, DREAM_A3_DA_HMD_OFF_AOR, &dream_a3_da_maptbl[HMD_AOR_MAPTBL], 1);
 DEFINE_STATIC_PACKET(dream_a3_da_hmd_off_ltps, DSI_PKT_TYPE_WR, DREAM_A3_DA_HMD_OFF_LTPS);
+DEFINE_STATIC_PACKET(dream_a3_da_oc75_ltps_v5b, DSI_PKT_TYPE_WR, DREAM_A3_DA_OC75_LTPS_V5B);
 
 DEFINE_VARIABLE_PACKET(dream_a3_da_hmd_gamma, DSI_PKT_TYPE_WR, DREAM_A3_DA_GAMMA, &dream_a3_da_maptbl[HMD_GAMMA_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(dream_a3_da_hmd_aor, DSI_PKT_TYPE_WR, DREAM_A3_DA_AOR, &dream_a3_da_maptbl[HMD_AOR_MAPTBL], 1);
@@ -2025,9 +2039,9 @@ static void *dream_a3_da_set_bl_cmdtbl[] = {
 };
 
 static void *dream_a3_da_hmd_on_cmdtbl[] = {
+	/* EXYNOS8895-D14015-LTPS75-V5B: runtime OC trigger only */
 	&KEYINFO(dream_a3_da_level2_key_enable),
-	&PKTINFO(dream_a3_da_hmd_on_aor),
-	&PKTINFO(dream_a3_da_hmd_on_ltps),
+	&PKTINFO(dream_a3_da_oc75_ltps_v5b),
 	&PKTINFO(dream_a3_da_gamma_update_enable),
 	&KEYINFO(dream_a3_da_level2_key_disable),
 };
