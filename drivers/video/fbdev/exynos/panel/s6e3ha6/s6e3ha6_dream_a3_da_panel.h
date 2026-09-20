@@ -1594,7 +1594,7 @@ u8 DREAM_A3_DA_GAMMA_UPDATE_ENABLE[] = { 0xF7, 0x03 };
  *
  * This command is NOT sent during boot.
  */
-u8 DREAM_A3_DA_OC_REFRESH_75[] = { 0x60, 0x04 };
+u8 DREAM_A3_DA_OC_REFRESH_75[] = { 0x60, 0x08 };
 u8 DREAM_A3_DA_OC_REFRESH_60[] = { 0x60, 0x00 };
 
 u8 DREAM_A3_DA_ACL_ONOFF[] = { 0x55, 0x00 };
