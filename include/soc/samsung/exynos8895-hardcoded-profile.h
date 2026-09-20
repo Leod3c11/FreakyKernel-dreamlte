@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 5U
+#define EXYNOS8895_HC_PROFILE_VERSION 6U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
@@ -203,6 +203,47 @@ static const unsigned int
 exynos8895_g3d_thermal_khz[EXYNOS8895_G3D_TMU_COUNT] = {
 	850000, 800000, 700000, 572000, 455000, 385000, 260000,
 };
+
+
+struct exynos8895_hc_lut_desc {
+	unsigned int width;
+	unsigned int rows;
+	const int *params;
+};
+
+static const int exynos8895_hc_lut_0[] = { 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 1, 0, 3, 0, 2, 0, 4, 0, 3, 0, 5, 0, 4, 0, 12, 6, 5, 0, 12, 7, 5, 0, 12, 8, 5, 0, 12, 9, 5, 0, 12, 10, 5, 0, 12, 11, 5, 0 };
+static const int exynos8895_hc_lut_1[] = { 1, 2, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 2, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 3, 2, 0, 3, 2, 2, 3, 3, 0, 3, 4, 0, 0, 1, 0, 0, 0, 3, 1, 1, 0, 0, 1, 0, 1, 3, 3, 1, 1, 2, 1, 1, 1, 3, 1, 1, 0, 0, 1, 1, 1, 3, 3, 1, 1, 2, 1, 1, 1, 3, 1, 1, 0, 0, 1, 1, 2, 5, 5, 2, 2, 5, 2, 2, 1, 3, 1, 1, 0, 0, 1, 1, 4, 7, 7, 5, 5, 5, 5, 5 };
+static const int exynos8895_hc_lut_2[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 };
+static const int exynos8895_hc_lut_3[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+static const int exynos8895_hc_lut_4[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+static const int exynos8895_hc_lut_5[] = { 1, 1, 0, 0, 3, 3, 0, 0, 2, 2, 1, 1, 0, 0, 15, 15 };
+static const int exynos8895_hc_lut_6[] = { 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 15, 15, 0, 0, 15, 15, 0, 3, 0, 0, 3, 0, 0, 0, 1, 0, 0, 3, 0, 0, 0, 0, 15, 15, 0, 0, 15, 15, 0, 3, 0, 0, 3, 0, 0, 1, 1, 0, 0, 3, 0, 0, 0, 0, 15, 15, 0, 0, 15, 15, 0, 2, 2, 2, 3, 0, 0, 1, 1, 0, 0, 3, 1, 0, 0, 0, 15, 15, 0, 0, 15, 15, 0, 2, 2, 2, 3, 0, 0, 3, 3, 0, 0, 3, 1, 0, 0, 0, 15, 15, 0, 0, 15, 15, 0, 0, 0, 0, 0, 0, 0, 3, 3, 0, 0, 0, 15, 15, 15, 15, 15, 15, 0, 0, 15, 15, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15 };
+static const int exynos8895_hc_lut_7[] = { 1, 0, 0, 1, 0, 2, 0, 3, 0, 5 };
+static const int exynos8895_hc_lut_8[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+static const int exynos8895_hc_lut_9[] = { 0, 0, 0 };
+
+static const struct exynos8895_hc_lut_desc
+exynos8895_hc_lut_descs[EXYNOS8895_HC_DOMAIN_COUNT] = {
+	[0] = { .width = 4U, .rows = 12U, .params = exynos8895_hc_lut_0 },
+	[1] = { .width = 16U, .rows = 7U, .params = exynos8895_hc_lut_1 },
+	[2] = { .width = 1U, .rows = 18U, .params = exynos8895_hc_lut_2 },
+	[3] = { .width = 1U, .rows = 12U, .params = exynos8895_hc_lut_3 },
+	[4] = { .width = 1U, .rows = 9U, .params = exynos8895_hc_lut_4 },
+	[5] = { .width = 4U, .rows = 4U, .params = exynos8895_hc_lut_5 },
+	[6] = { .width = 22U, .rows = 7U, .params = exynos8895_hc_lut_6 },
+	[7] = { .width = 2U, .rows = 5U, .params = exynos8895_hc_lut_7 },
+	[8] = { .width = 1U, .rows = 9U, .params = exynos8895_hc_lut_8 },
+	[9] = { .width = 1U, .rows = 3U, .params = exynos8895_hc_lut_9 },
+};
+
+static inline const struct exynos8895_hc_lut_desc *
+exynos8895_hc_lut_desc(unsigned int idx)
+{
+	if (idx >= EXYNOS8895_HC_DOMAIN_COUNT)
+		return NULL;
+	return &exynos8895_hc_lut_descs[idx];
+}
+
 
 /* ------------------------------------------------------------------------- */
 /* Live FVMap snapshot: rate / voltage tables                                */
@@ -568,10 +609,13 @@ static inline bool exynos8895_hc_rate_allowed(unsigned int idx,
 	if (!d)
 		return false;
 
-	if (raw) {
-		if (!d->runtime_raw_allowed)
-			return false;
-	} else {
+	/*
+	 * v6 safety lock: raw policy bypass remains disabled until
+	 * direct-transition validation passes for the target domain.
+	 */
+	if (raw)
+		return false;
+	else {
 		if (!d->runtime_rate_allowed)
 			return false;
 		if (rate < d->policy_min_khz || rate > d->policy_max_khz)

@@ -680,6 +680,82 @@ static int exynos8895_soc_lut_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+
+
+static int exynos8895_soc_verify_show(struct seq_file *m, void *unused)
+{
+	unsigned int count, i, j, k;
+	unsigned int total_errors = 0;
+
+	count = cmucal_get_list_size(ACPM_VCLK_TYPE);
+	if (count > EXYNOS8895_HC_DOMAIN_COUNT)
+		count = EXYNOS8895_HC_DOMAIN_COUNT;
+
+	seq_printf(m, "EXYNOS8895_HC_VERIFY profile=%u domains=%u\n",
+		   EXYNOS8895_HC_PROFILE_VERSION, count);
+
+	for (i = 0; i < count; i++) {
+		const struct exynos8895_hc_domain_desc *d =
+			exynos8895_hc_domain(i);
+		const struct exynos8895_hc_lut_desc *hl =
+			exynos8895_hc_lut_desc(i);
+		struct vclk *vclk = cmucal_get_node(ACPM_VCLK_TYPE | i);
+		unsigned int errors = 0;
+
+		if (!d || !hl || !vclk || !vclk->lut || !vclk->list) {
+			seq_printf(m, "%u %s ERROR unavailable\n",
+				   i, d ? d->name : "unknown");
+			total_errors++;
+			continue;
+		}
+
+		if (vclk->num_rates != hl->rows)
+			errors++;
+		if (vclk->num_list != hl->width)
+			errors++;
+		if (d->member_count != vclk->num_list)
+			errors++;
+
+		if (d->member_count == vclk->num_list)
+			for (j = 0; j < vclk->num_list; j++)
+				if (d->members[j].cal_id != vclk->list[j])
+					errors++;
+
+		if (vclk->num_rates == hl->rows &&
+		    vclk->num_list == hl->width)
+			for (j = 0; j < hl->rows; j++)
+				for (k = 0; k < hl->width; k++)
+					if (hl->params[j * hl->width + k] !=
+					    vclk->lut[j].params[k])
+						errors++;
+
+		seq_printf(m,
+			   "%u %s %s errors=%u rows=%u/%u width=%u/%u\n",
+			   i, d->name, errors ? "MISMATCH" : "OK",
+			   errors, vclk->num_rates, hl->rows,
+			   vclk->num_list, hl->width);
+		total_errors += errors;
+	}
+
+	seq_printf(m, "RESULT %s total_errors=%u\n",
+		   total_errors ? "FAIL" : "PASS", total_errors);
+	return 0;
+}
+
+static int exynos8895_soc_verify_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, exynos8895_soc_verify_show, inode->i_private);
+}
+
+static const struct file_operations exynos8895_soc_verify_fops = {
+	.owner = THIS_MODULE,
+	.open = exynos8895_soc_verify_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+
 static int exynos8895_soc_profile_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, exynos8895_soc_profile_show, inode->i_private);
@@ -777,13 +853,13 @@ static ssize_t exynos8895_soc_control_read(struct file *file,
 		"Exynos8895 SoC runtime control\n"
 		"WRITE commands:\n"
 		"  rate <domain> <kHz>       (respects policy_min/max)\n"
-		"  rate_raw <domain> <kHz>   (known FVMap row, known voltage)\n"
+		"  rate_raw <domain> <kHz>   (TEMPORARILY DISABLED IN v6)\n"
 		"  margin <domain> <delta_uV>\n"
 		"\n"
 		"domains: mif int cpucl0 cpucl1 g3d intcam cam disp g3dm cp\n"
 		"\n"
 		"rate is limited by the central profile policy.\n"
-		"rate_raw bypasses policy limits but still requires a known row and non-zero voltage.\n"
+		"rate_raw is disabled until direct-transition validation passes.\n"
 		"margin uses cal_dfs_set_volt_margin(); it is a voltage DELTA, not absolute uV.\n"
 		"CPU/devfreq governors may change a requested rate again after this write.\n";
 
@@ -891,6 +967,8 @@ static void exynos8895_soc_debugfs_init(void)
 			    NULL, &exynos8895_soc_profile_fops);
 	debugfs_create_file("lut", 0444, exynos8895_soc_debugfs_root,
 			    NULL, &exynos8895_soc_lut_fops);
+	debugfs_create_file("verify", 0444, exynos8895_soc_debugfs_root,
+			    NULL, &exynos8895_soc_verify_fops);
 	debugfs_create_file("control", 0600, exynos8895_soc_debugfs_root,
 			    NULL, &exynos8895_soc_control_fops);
 
