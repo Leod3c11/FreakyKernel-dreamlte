@@ -22,7 +22,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#define EXYNOS8895_HC_PROFILE_VERSION 10U
+#define EXYNOS8895_HC_PROFILE_VERSION 11U
 
 enum exynos8895_hc_domain_id {
 	EXYNOS8895_HC_MIF = 0,
@@ -118,14 +118,16 @@ struct exynos8895_hc_domain_desc {
 /* ------------------------------------------------------------------------- */
 
 #define EXYNOS8895_G3D_ACPM_INDEX        4U
-#define EXYNOS8895_G3D_OPP_COUNT         9U
+#define EXYNOS8895_G3D_OPP_COUNT         11U
+#define EXYNOS8895_G3D_STOCK_FVMAP_COUNT 9U
+#define EXYNOS8895_G3D_MAX_SOURCE_OPPS    20U
 #define EXYNOS8895_HC_G3D_OPP_COUNT      EXYNOS8895_G3D_OPP_COUNT
-#define EXYNOS8895_G3D_FVMAP_COUNT       9U
+#define EXYNOS8895_G3D_FVMAP_COUNT       EXYNOS8895_G3D_OPP_COUNT
 #define EXYNOS8895_G3D_TMU_COUNT         7U
 #define EXYNOS8895_G3D_PLL_FIN_KHZ       26000U
 #define EXYNOS8895_G3D_PLL_SFR_LO        0x0140U
 #define EXYNOS8895_G3D_MIN_UV            450000U
-#define EXYNOS8895_G3D_MAX_UV            850000U
+#define EXYNOS8895_G3D_MAX_UV            975000U
 #define EXYNOS8895_G3D_START_KHZ         260000U
 #define EXYNOS8895_G3D_HIGHSPEED_KHZ     455000U
 
@@ -156,47 +158,45 @@ struct exynos8895_g3d_hardcoded_opp {
 static const struct exynos8895_g3d_hardcoded_opp
 exynos8895_g3d_opp_table[EXYNOS8895_G3D_OPP_COUNT] = {
 	/*
-	 * EXYNOS8895-G3D-1GHZ-V10B
+	 * EXYNOS8895-G3D-ACPM-EXPAND-V11
 	 *
-	 * FVMap/ACPM exposes exactly 9 G3D slots. Keep those 9 physical
-	 * firmware keys and replace only their source-owned logical clocks,
-	 * voltages and PLL PMS values.
+	 * Native expanded ACPM/FVMap table.  These are real rates sent to the
+	 * ACPM firmware; acpm_key_khz intentionally equals clock_khz.  The live
+	 * FVMap header/ratevolt/table/PLL structures are relocated by fvmap.c so
+	 * num_of_lv is no longer tied to Samsung's original nine G3D rows.
 	 *
-	 * PLL_G3D:
-	 * Fout = 26 MHz * M / (P * 2^S)
-	 *
-	 * 1000 MHz = 26 * 500 / 13
-	 *  900 MHz = 26 * 450 / 13
-	 *  850 MHz = 26 * 425 / 13
+	 * The Mali r16p0 platform allows up to 20 rows (DVFS_TABLE_ROW_MAX=20).
 	 */
-	/* logical key     uV      M   P  S min max stay  MIF      little big INT */
-	{1000000, 839000, 975000, 500, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
-	{ 900000, 764000, 925000, 450, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
-	{ 850000, 683000, 875000, 425, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
-	{ 800000, 572000, 825000, 400, 13, 0, 43, 65, 1, 2093000, 0, 0, 400000 },
-	{ 700000, 546000, 775000, 350, 13, 0, 39, 65, 1, 2093000, 0, 0, 400000 },
-	{ 572000, 455000, 681250, 176,  4, 1, 47, 65, 1, 2093000, 0, 0, 400000 },
-	{ 455000, 385000, 650000, 140,  4, 1, 40, 65, 1, 2002000, 0, 0, 267000 },
-	{ 385000, 338000, 643750, 385, 13, 1, 42, 65, 1, 1794000, 0, 0, 267000 },
-	{ 260000, 260000, 637500, 160,  4, 2, 35, 65, 1, 1352000, 0, 0, 107000 },
+	/* clock    ACPM     uV      M   P  S min max stay  MIF      little big INT */
+	{1000000, 1000000, 975000, 500, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
+	{ 900000,  900000, 925000, 450, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
+	{ 850000,  850000, 875000, 425, 13, 0, 44, 65, 1, 2093000, 0, 0, 400000 },
+	{ 800000,  800000, 825000, 400, 13, 0, 43, 65, 1, 2093000, 0, 0, 400000 },
+	{ 700000,  700000, 775000, 350, 13, 0, 39, 65, 1, 2093000, 0, 0, 400000 },
+	{ 572000,  572000, 681250, 176,  4, 1, 47, 65, 1, 2093000, 0, 0, 400000 },
+	{ 546000,  546000, 662500, 168,  4, 1, 40, 65, 1, 2002000, 0, 0, 400000 },
+	{ 455000,  455000, 650000, 140,  4, 1, 40, 65, 1, 2002000, 0, 0, 267000 },
+	{ 385000,  385000, 643750, 385, 13, 1, 42, 65, 1, 1794000, 0, 0, 267000 },
+	{ 338000,  338000, 637500, 104,  4, 1, 35, 65, 1, 1352000, 0, 0, 178000 },
+	{ 260000,  260000, 637500, 160,  4, 2, 35, 65, 1, 1352000, 0, 0, 107000 },
 };
 
 /* Samsung ACPM slot keys captured from the target. */
 static const unsigned int
-exynos8895_g3d_stock_rate[EXYNOS8895_G3D_OPP_COUNT] = {
+exynos8895_g3d_stock_rate[EXYNOS8895_G3D_STOCK_FVMAP_COUNT] = {
 	839000, 764000, 683000, 572000, 546000,
 	455000, 385000, 338000, 260000,
 };
 
 /* Exact PLL-derived aliases observed before the source override. */
 static const unsigned int
-exynos8895_g3d_stock_pll_rate[EXYNOS8895_G3D_OPP_COUNT] = {
+exynos8895_g3d_stock_pll_rate[EXYNOS8895_G3D_STOCK_FVMAP_COUNT] = {
 	838000, 764000, 682000, 572000, 546000,
 	455000, 384000, 338000, 260000,
 };
 
 static const unsigned int
-exynos8895_g3d_stock_pms[EXYNOS8895_G3D_OPP_COUNT] = {
+exynos8895_g3d_stock_pms[EXYNOS8895_G3D_STOCK_FVMAP_COUNT] = {
 	EXYNOS8895_G3D_PACK_PMS(129, 4, 0),
 	EXYNOS8895_G3D_PACK_PMS(147, 5, 0),
 	EXYNOS8895_G3D_PACK_PMS(105, 4, 0),
@@ -429,11 +429,11 @@ static const struct exynos8895_hc_pll exynos8895_hc_cpucl1_plls[] = {
 };
 
 static const struct exynos8895_hc_pll_pms exynos8895_hc_g3d_pms[] = {
-	{425,13,0},{400,13,0},{350,13,0},{176,4,1},{168,4,1},
-	{140,4,1},{385,13,1},{104,4,1},{160,4,2},
+	{500,13,0},{450,13,0},{425,13,0},{400,13,0},{350,13,0},
+	{176,4,1},{168,4,1},{140,4,1},{385,13,1},{104,4,1},{160,4,2},
 };
 static const struct exynos8895_hc_pll exynos8895_hc_g3d_plls[] = {
-	{ 0xa3800140, 0x0468, 9, 9, exynos8895_hc_g3d_pms },
+	{ 0xa3800140, 0x0468, 11, 11, exynos8895_hc_g3d_pms },
 };
 
 /* ------------------------------------------------------------------------- */

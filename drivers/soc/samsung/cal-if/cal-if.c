@@ -29,7 +29,9 @@ unsigned int cal_clk_is_enabled(unsigned int id)
 unsigned long cal_dfs_get_max_freq(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)) &&
+	    (GET_IDX(id) != EXYNOS8895_G3D_ACPM_INDEX ||
+	     exynos8895_g3d_hardcoded_active()))
 		return exynos8895_hc_domain(GET_IDX(id))->policy_max_khz;
 #endif
 	return vclk_get_max_freq(id);
@@ -39,7 +41,9 @@ unsigned long cal_dfs_get_max_freq(unsigned int id)
 unsigned long cal_dfs_get_min_freq(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)) &&
+	    (GET_IDX(id) != EXYNOS8895_G3D_ACPM_INDEX ||
+	     exynos8895_g3d_hardcoded_active()))
 		return exynos8895_hc_domain(GET_IDX(id))->policy_min_khz;
 #endif
 	return vclk_get_min_freq(id);
@@ -49,7 +53,9 @@ unsigned long cal_dfs_get_min_freq(unsigned int id)
 unsigned int cal_dfs_get_lv_num(unsigned int id)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)) &&
+	    (GET_IDX(id) != EXYNOS8895_G3D_ACPM_INDEX ||
+	     exynos8895_g3d_hardcoded_active()))
 		return exynos8895_hc_domain(GET_IDX(id))->level_count;
 #endif
 	return vclk_get_lv_num(id);
@@ -66,7 +72,8 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 	int ret;
 
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
+	if (IS_ACPM_VCLK(id) && GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX &&
+	    exynos8895_g3d_hardcoded_active()) {
 		const struct exynos8895_g3d_hardcoded_opp *opp;
 		unsigned long fw_rate, pll_rate, core_rate;
 		unsigned int pll_id, mux_id;
@@ -84,15 +91,13 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		}
 
 		/*
-		 * ACPM firmware keeps Samsung's nominal frequency as the slot key.
-		 * The source-owned FVMap row supplies the voltage and PMS that the
-		 * selected slot actually programs into PLL_G3D.
+		 * V11 expands the live FVMap itself, so ACPM receives the real
+		 * requested rate and resolves it through the enlarged table.
 		 */
-		ret = exynos_acpm_set_rate(EXYNOS8895_G3D_ACPM_INDEX,
-					  opp->acpm_key_khz);
+		ret = exynos_acpm_set_rate(EXYNOS8895_G3D_ACPM_INDEX, rate);
 		if (ret) {
-			pr_err("G3D hardcoded: ACPM key %u for %lu kHz failed (%d)\n",
-			       opp->acpm_key_khz, rate, ret);
+			pr_err("G3D expanded: ACPM rate %lu kHz failed (%d)\n",
+			       rate, ret);
 			return ret;
 		}
 
@@ -102,8 +107,8 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 			return -ENODEV;
 		pll_rate = ra_recalc_rate(pll_id) / 1000UL;
 
-		pr_info("G3D hardcoded transition: logical=%lu key=%u fw=%lu pll=%lu kHz PMS=%u/%u/%u\n",
-			rate, opp->acpm_key_khz, fw_rate, pll_rate,
+		pr_info("G3D expanded transition: requested=%lu fw=%lu pll=%lu kHz PMS=%u/%u/%u\n",
+			rate, fw_rate, pll_rate,
 			opp->pll_m, opp->pll_p, opp->pll_s);
 
 		/*
@@ -112,9 +117,9 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		 * as diagnostic only.  The authoritative success condition is the
 		 * physical PLL_G3D readback, which comes from the live registers.
 		 */
-		if (fw_rate && fw_rate != opp->acpm_key_khz && fw_rate != rate)
-			pr_warn("G3D hardcoded: ACPM diagnostic readback logical=%lu key=%u fw=%lu\n",
-				rate, opp->acpm_key_khz, fw_rate);
+		if (fw_rate && fw_rate != rate)
+			pr_warn("G3D expanded: ACPM diagnostic readback requested=%lu fw=%lu\n",
+				rate, fw_rate);
 
 		if (pll_rate != rate) {
 			pr_err("G3D hardcoded: physical PLL mismatch logical=%lu actual=%lu kHz\n",
@@ -147,8 +152,8 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 			return -EIO;
 		}
 
-		pr_info("G3D hardcoded delivered: logical=%lu key=%u pll=%lu core=%lu kHz\n",
-			rate, opp->acpm_key_khz, pll_rate, core_rate);
+		pr_info("G3D expanded delivered: requested=%lu pll=%lu core=%lu kHz\n",
+			rate, pll_rate, core_rate);
 
 		vclk = cmucal_get_node(id);
 		if (vclk)
@@ -204,7 +209,8 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 
 #if defined(CONFIG_SOC_EXYNOS8895)
 	if (IS_ACPM_VCLK(id) &&
-	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX) {
+	    GET_IDX(id) == EXYNOS8895_G3D_ACPM_INDEX &&
+	    exynos8895_g3d_hardcoded_active()) {
 		const struct exynos8895_g3d_hardcoded_opp *opp;
 		unsigned int mux_id;
 		unsigned long core_rate;
@@ -232,7 +238,9 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 int cal_dfs_get_rate_table(unsigned int id, unsigned long *table)
 {
 #if defined(CONFIG_SOC_EXYNOS8895)
-	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)))
+	if (IS_ACPM_VCLK(id) && exynos8895_hc_override_cal(GET_IDX(id)) &&
+	    (GET_IDX(id) != EXYNOS8895_G3D_ACPM_INDEX ||
+	     exynos8895_g3d_hardcoded_active()))
 		return exynos8895_hc_fill_rate_table(GET_IDX(id), table);
 #endif
 	return vclk_get_rate_table(id, table);

@@ -375,14 +375,16 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		/*
 		 * Source table is authoritative on Exynos8895.  Do not intersect it
 		 * with the stock DTB or ECT level_en mask: that path is exactly what
-		 * clipped the device back to 546 MHz.  Apply the same nine rows into
-		 * ACPM SRAM first, then publish those rows to Mali.
+		 * clipped the device back to 546 MHz.  Expand the live ACPM/FVMap
+		 * first, then publish every source-owned row to Mali.
 		 */
 		apply_ret = exynos8895_g3d_hardcoded_apply();
-		if (apply_ret)
+		if (apply_ret) {
 			GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u,
-				"G3D hardcoded: SRAM apply during Mali init returned %d\n",
+				"G3D expanded: ACPM FVMap unavailable (%d), using stock Mali path\n",
 				apply_ret);
+			goto exynos8895_g3d_stock_fallback;
+		}
 
 		memset(dvfs_table, 0, sizeof(gpu_dvfs_table_default));
 		for (i = 0; i < EXYNOS8895_G3D_OPP_COUNT; i++) {
@@ -425,12 +427,16 @@ static int gpu_dvfs_update_asv_table(struct kbase_device *kbdev)
 		}
 
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u,
-			"G3D hardcoded: Mali owns 9 source rows %u..%u kHz (SRAM ret=%d)\n",
-			platform->gpu_max_clock, platform->gpu_min_clock, apply_ret);
+			"G3D expanded: Mali owns %u source rows %u..%u kHz (SRAM ret=%d)\n",
+			EXYNOS8895_G3D_OPP_COUNT, platform->gpu_max_clock,
+			platform->gpu_min_clock, apply_ret);
 		return 0;
 	}
 #endif
 
+#if defined(CONFIG_SOC_EXYNOS8895)
+exynos8895_g3d_stock_fallback:
+#endif
 	/* Stock Samsung path, also used as the fail-safe on Exynos8895. */
 	{
 		struct device_node *np = kbdev->dev->of_node;
