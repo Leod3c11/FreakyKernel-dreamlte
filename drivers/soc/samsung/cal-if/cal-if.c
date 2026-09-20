@@ -91,6 +91,7 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 
 		ret = exynos8895_g3d_hardcoded_apply();
 		if (ret) {
+			pr_emerg("G3D_FLIGHT FVMAP_FAIL rate=%lu ret=%d\n", rate, ret);
 			pr_err("G3D hardcoded: SRAM apply failed before %lu kHz (%d)\n", rate, ret);
 			return ret;
 		}
@@ -103,8 +104,10 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		 * requested rate and resolves it through the enlarged table.
 		 */
 		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
-			pr_emerg("G3D_FLIGHT ACPM_BEGIN rate=%lu\\n", rate);
+			pr_emerg("G3D_FLIGHT ACPM_BEGIN rate=%lu\n", rate);
 		ret = exynos_acpm_set_rate(EXYNOS8895_G3D_ACPM_INDEX, rate);
+		if (rate >= EXYNOS8895_G3D_FLIGHTLOG_MIN_KHZ)
+			pr_emerg("G3D_FLIGHT ACPM_END rate=%lu ret=%d\n", rate, ret);
 		if (ret) {
 			pr_err("G3D expanded: ACPM rate %lu kHz failed (%d)\n",
 			       rate, ret);

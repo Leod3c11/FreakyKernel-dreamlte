@@ -437,6 +437,8 @@ EXPORT_SYMBOL_GPL(exynos8895_g3d_hardcoded_sync_cal);
 
 int exynos8895_g3d_hardcoded_apply(void)
 {
+	pr_emerg("G3D_FLIGHT FVMAP_APPLY_ENTER active=%d\n",
+		exynos8895_g3d_sram_active ? 1 : 0);
 	struct fvmap_header *header;
 	struct fvmap_header *h;
 	struct rate_volt_header *old_rv;
@@ -509,6 +511,9 @@ int exynos8895_g3d_hardcoded_apply(void)
 		exynos8895_g3d_sram_active = true;
 		pr_info("G3D V12: existing expanded FVMap refreshed rv=0x%x table=0x%x pll=0x%x\n",
 			rv_off, table_off, pll_off);
+		pr_emerg("G3D_FLIGHT FVMAP_REFRESH lv=%u rv=0x%x table=0x%x pll=0x%x init=%u\n",
+			h->num_of_lv, h->o_ratevolt, h->o_tables,
+			clks->addr[0], h->init_lv);
 		return 0;
 	}
 
